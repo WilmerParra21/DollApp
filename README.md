@@ -1,6 +1,6 @@
 # DollApp
 
-DollApp es una aplicación móvil construida con Flutter para consultar tasas de cambio y mantener a los usuarios informados sobre sus actualizaciones.
+DollApp es una aplicación móvil construida con Flutter para consultar tasas de cambio y mantener a los usuarios informados sobre sus actualizaciones, está orientada al consummo del público venezolano con tasas de conversión del BCV y otras utilizadas en el país.
 
 ## ¿Qué hace?
 
