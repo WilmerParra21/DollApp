@@ -1,18 +1,24 @@
 import 'dart:convert';
 
 import 'package:dollapp/features/rates/data/http_exchange_rate_repository.dart';
+import 'package:dollapp/features/rates/models/exchange_rate.dart';
+import 'package:dollapp/features/rates/models/exchange_rate_snapshot.dart';
+import 'package:dollapp/features/rates/utils/exchange_pair_quote.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:path/path.dart' as path;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {
-  setUp(() {
+  setUp(() async {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
     SharedPreferences.setMockInitialValues({});
+    final dbPath = await getDatabasesPath();
+    await deleteDatabase(path.join(dbPath, 'dollapp_snapshot.db'));
     dotenv.loadFromString(
       envString: '''
 SUPABASE_PROJECT_REF=test-project
@@ -23,6 +29,9 @@ SUPABASE_ANON_KEY=test-key
 
   tearDown(dotenv.clean);
 
+  ExchangeRate rowByName(ExchangeRateSnapshot snapshot, String name) =>
+      snapshot.rates.firstWhere((rate) => rate.name == name);
+
   test('parses nombre, moneda, monto and conver from the API format', () async {
     final repository = HttpExchangeRateRepository(
       client: MockClient((request) async {
@@ -31,11 +40,6 @@ SUPABASE_ANON_KEY=test-key
           return http.Response.bytes(
             utf8.encode(
               jsonEncode({
-                'Promedio USDT': [
-                  {'fecha': '2026-04-29', 'monto': 643.42, 'moneda': 'Bs'},
-                  {'fecha': '2026-04-28', 'monto': 641.15, 'moneda': 'Bs'},
-                  {'fecha': '2026-04-27', 'monto': 639.50, 'moneda': 'Bs'},
-                ],
                 'Dólar BCV': [
                   {'fecha': '2026-04-29', 'monto': 485.22, 'moneda': 'Bs'},
                   {'fecha': '2026-04-28', 'monto': 484.10, 'moneda': 'Bs'},
@@ -50,6 +54,11 @@ SUPABASE_ANON_KEY=test-key
                   {'fecha': '2026-04-29', 'monto': 569.29, 'moneda': 'Bs'},
                   {'fecha': '2026-04-28', 'monto': 567.80, 'moneda': 'Bs'},
                   {'fecha': '2026-04-27', 'monto': 566.12, 'moneda': 'Bs'},
+                ],
+                'Promedio USDT': [
+                  {'fecha': '2026-04-29', 'monto': 643.42, 'moneda': 'Bs'},
+                  {'fecha': '2026-04-28', 'monto': 641.15, 'moneda': 'Bs'},
+                  {'fecha': '2026-04-27', 'monto': 639.50, 'moneda': 'Bs'},
                 ],
               }),
             ),
@@ -88,7 +97,7 @@ SUPABASE_ANON_KEY=test-key
                   'nombre': 'Promedio USDT',
                   'moneda': 'Bs',
                   'monto': '643,42',
-                  'conver': 'usd',
+                  'conver': 'usdt',
                   'fechaActualizacion': '28/04/2026',
                 },
               ],
@@ -101,29 +110,31 @@ SUPABASE_ANON_KEY=test-key
     );
 
     final snapshot = await repository.getRates(forceRefresh: true);
-    final usd = snapshot.byCode('USD');
-    final eur = snapshot.byCode('EUR');
-    final cop = snapshot.byCode('COP');
-    final usdt = snapshot.byCode('USDT');
+    final usd = rowByName(snapshot, 'Dolar BCV');
+    final eur = rowByName(snapshot, 'Euro BCV');
+    final cop = rowByName(snapshot, 'Peso Colombiano');
+    final usdt = rowByName(snapshot, 'Promedio USDT');
 
     expect(usd.name, 'Dolar BCV');
+    expect(usd.id, 'USD-USD-Dolar BCV-BS');
     expect(usd.value, 485.22);
-    expect(usd.displayCurrencyCode, 'Bs');
+    expect(usd.moneyType, 'BS');
     expect(usd.conversionCode, 'USD');
     expect(usd.sparklineValues, [483.95, 484.10, 485.22]);
     expect(usd.changePercent, closeTo(0.231, 0.001));
 
     expect(eur.name, 'Euro BCV');
     expect(eur.value, 569.29);
-    expect(eur.displayCurrencyCode, 'Bs');
+    expect(eur.moneyType, 'BS');
     expect(eur.conversionCode, 'EUR');
     expect(eur.sparklineValues, [566.12, 567.80, 569.29]);
     expect(eur.changePercent, closeTo(0.262, 0.001));
 
     expect(cop.name, 'Peso Colombiano');
+    expect(cop.id, 'USD-USD-Peso Colombiano-COP');
     expect(cop.value, 3633.76);
     expect(cop.displayValue, 3633.76);
-    expect(cop.displayCurrencyCode, 'COP');
+    expect(cop.moneyType, 'COP');
     expect(cop.conversionCode, 'USD');
     expect(cop.sourceUpdatedAtLabel, '28/04/2026');
     expect(cop.sparklineValues, [3628.50, 3630, 3633.76]);
@@ -132,12 +143,274 @@ SUPABASE_ANON_KEY=test-key
     expect(usdt.name, 'Promedio USDT');
     expect(usdt.value, 643.42);
     expect(usdt.displayValue, 643.42);
-    expect(usdt.displayCurrencyCode, 'Bs');
-    expect(usdt.conversionCode, 'USD');
+    expect(usdt.moneyType, 'BS');
+    expect(usdt.conversionCode, 'USDT');
     expect(usdt.sourceUpdatedAtLabel, '28/04/2026');
-    expect(usdt.sparklineValues, [639.50, 641.15, 643.42]);
+expect(usdt.sparklineValues, [639.50, 641.15, 643.42]);
     expect(usdt.changePercent, closeTo(0.354, 0.001));
   });
+
+  test('hides identical duplicate API entries when the same rate appears twice', () async {
+    final repository = HttpExchangeRateRepository(
+      client: MockClient((request) async {
+        if (request.url.path.endsWith('/get-tasas-historico')) {
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode({
+                'Dólar BCV': [
+                  {'fecha': '2026-04-29', 'monto': 485.22, 'moneda': 'Bs'},
+                ],
+              }),
+            ),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+
+        return http.Response.bytes(
+          utf8.encode(
+            jsonEncode({
+              'fecha': '2026-04-29',
+              'tasas': [
+                {
+                  'nombre': 'Dolar BCV',
+                  'moneda': 'Bs',
+                  'conver': 'usd',
+                  'monto': '485,22',
+                  'fechaActualizacion': '28/04/2026',
+                },
+                {
+                  'nombre': 'Dolar BCV',
+                  'moneda': 'Bs',
+                  'conver': 'usd',
+                  'monto': '485,22',
+                  'fechaActualizacion': '28/04/2026',
+                },
+              ],
+            }),
+          ),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    final snapshot = await repository.getRates(forceRefresh: true);
+    final usdRates = snapshot.rates.where((rate) => rate.code == 'USD');
+
+    expect(usdRates.length, 1);
+    expect(snapshot.rates.map((rate) => rate.id).toSet().length,
+        snapshot.rates.length);
+  });
+
+  test('marks a rate as favorite and preserves it in local snapshot', () async {
+    final repository = HttpExchangeRateRepository(
+      client: MockClient((request) async {
+        if (request.url.path.endsWith('/get-tasas-historico')) {
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode({
+                'Dólar BCV': [
+                  {'fecha': '2026-04-29', 'monto': 485.22, 'moneda': 'Bs'},
+                  {'fecha': '2026-04-28', 'monto': 484.10, 'moneda': 'Bs'},
+                ],
+                'Euro BCV': [
+                  {'fecha': '2026-04-29', 'monto': 569.29, 'moneda': 'Bs'},
+                  {'fecha': '2026-04-28', 'monto': 567.80, 'moneda': 'Bs'},
+                ],
+              }),
+            ),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+
+        return http.Response.bytes(
+          utf8.encode(
+            jsonEncode({
+              'fecha': '2026-04-29',
+              'tasas': [
+                {
+                  'nombre': 'Dolar BCV',
+                  'moneda': 'Bs',
+                  'conver': 'usd',
+                  'monto': '485,22',
+                  'fechaActualizacion': '28/04/2026',
+                },
+                {
+                  'nombre': 'Euro BCV',
+                  'moneda': 'Bs',
+                  'conver': 'eur',
+                  'monto': '569,29',
+                  'fechaActualizacion': '28/04/2026',
+                },
+              ],
+            }),
+          ),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    await repository.getRates(forceRefresh: true);
+    final firstSnapshot = await repository.loadSavedSnapshot();
+    expect(firstSnapshot, isNotNull);
+
+    await repository.setFavorite(rowByName(firstSnapshot!, 'Euro BCV').id, true);
+
+    final snapshot = await repository.loadSavedSnapshot();
+    expect(snapshot, isNotNull);
+    expect(snapshot!.rates.first.name, 'Euro BCV');
+    expect(rowByName(snapshot, 'Euro BCV').isFavorite, isTrue);
+  });
+
+  test(
+    'preserves favorites when the API order changes even if the generated id changes',
+    () async {
+      var rateRequestCount = 0;
+      final repository = HttpExchangeRateRepository(
+        client: MockClient((request) async {
+          if (request.url.path.endsWith('/get-tasas-historico')) {
+            return http.Response.bytes(
+              utf8.encode(
+                jsonEncode({
+                  'DÃ³lar BCV': [
+                    {'fecha': '2026-04-29', 'monto': 485.22, 'moneda': 'Bs'},
+                  ],
+                  'Euro BCV': [
+                    {'fecha': '2026-04-29', 'monto': 569.29, 'moneda': 'Bs'},
+                  ],
+                }),
+              ),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+
+          rateRequestCount += 1;
+          final tasas = rateRequestCount == 1
+              ? [
+                  {
+                    'nombre': 'Dolar BCV',
+                    'moneda': 'Bs',
+                    'conver': 'usd',
+                    'monto': '485,22',
+                    'fechaActualizacion': '28/04/2026',
+                  },
+                  {
+                    'nombre': 'Euro BCV',
+                    'moneda': 'Bs',
+                    'conver': 'eur',
+                    'monto': '569,29',
+                    'fechaActualizacion': '28/04/2026',
+                  },
+                ]
+              : [
+                  {
+                    'nombre': 'Euro BCV',
+                    'moneda': 'Bs',
+                    'conver': 'eur',
+                    'monto': '569,29',
+                    'fechaActualizacion': '28/04/2026',
+                  },
+                  {
+                    'nombre': 'Dolar BCV',
+                    'moneda': 'Bs',
+                    'conver': 'usd',
+                    'monto': '485,22',
+                    'fechaActualizacion': '28/04/2026',
+                  },
+                ];
+
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode({
+                'fecha': '2026-04-29',
+                'tasas': tasas,
+              }),
+            ),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+
+      final initialSnapshot = await repository.getRates(forceRefresh: true);
+      final eurId = rowByName(initialSnapshot, 'Euro BCV').id;
+
+      await repository.setFavorite(eurId, true);
+
+final refreshedSnapshot = await repository.getRates(forceRefresh: true);
+       expect(rowByName(refreshedSnapshot, 'Euro BCV').id, eurId);
+       expect(rowByName(refreshedSnapshot, 'Euro BCV').isFavorite, isTrue);
+      expect(refreshedSnapshot.rates.first.name, 'Euro BCV');
+    },
+  );
+
+  test(
+    'keeps EUR to VES and EUR to USD as different pairs without collisions',
+    () async {
+      final repository = HttpExchangeRateRepository(
+        client: MockClient((request) async {
+          if (request.url.path.endsWith('/get-tasas-historico')) {
+            return http.Response.bytes(
+              utf8.encode(
+                jsonEncode({
+                  'Euro BCV': [
+                    {'fecha': '2026-05-15', 'monto': 48.30, 'moneda': 'Bs'},
+                  ],
+                  'Euro a Dolar': [
+                    {'fecha': '2026-05-15', 'monto': 1.08, 'moneda': 'USD'},
+                  ],
+                }),
+              ),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode({
+                'fecha': '2026-05-15',
+                'tasas': [
+                  {
+                    'nombre': 'Euro BCV',
+                    'moneda': 'Bs',
+                    'conver': 'eur',
+                    'monto': '48,30',
+                    'fechaActualizacion': '15/05/2026',
+                  },
+                  {
+                    'nombre': 'Euro a Dolar',
+                    'moneda': 'USD',
+                    'conver': 'eur',
+                    'monto': '1,08',
+                    'fechaActualizacion': '15/05/2026',
+                  },
+                ],
+              }),
+            ),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+
+      final snapshot = await repository.getRates(forceRefresh: true);
+
+      final eurToVes = findQuoteForCurrencyPair(snapshot, 'EUR', 'VES');
+      final eurToUsd = findQuoteForCurrencyPair(snapshot, 'EUR', 'USD');
+
+      expect(snapshot.rates.length, 2);
+      expect(eurToVes, isNotNull);
+      expect(eurToUsd, isNotNull);
+      expect(eurToVes!.row.id, isNot(eurToUsd!.row.id));
+      expect(eurToVes.convert(1, 'EUR', 'VES'), closeTo(48.30, 0.001));
+      expect(eurToUsd.convert(1, 'EUR', 'USD'), closeTo(1.08, 0.001));
+    },
+  );
 
   test(
     'keeps previous rate when API returns 0,00 and preserves last update date label',
@@ -149,10 +422,6 @@ SUPABASE_ANON_KEY=test-key
             return http.Response.bytes(
               utf8.encode(
                 jsonEncode({
-                  'Promedio USDT': [
-                    {'fecha': '2026-04-29', 'monto': 643.42, 'moneda': 'Bs'},
-                    {'fecha': '2026-04-28', 'monto': 641.15, 'moneda': 'Bs'},
-                  ],
                   'Dólar BCV': [
                     {'fecha': '2026-04-29', 'monto': 485.22, 'moneda': 'Bs'},
                     {'fecha': '2026-04-28', 'monto': 484.10, 'moneda': 'Bs'},

@@ -67,9 +67,6 @@ void _handleUncaughtError(
   String accion, {
   Map<String, dynamic>? metadatos,
 }) {
-  // Log del error
-  debugPrint('Uncaught error: $error');
-  debugPrintStack(stackTrace: stackTrace);
 
   // Enviar a auditoría (de forma completamente asíncrona para no bloquear)
   Future.microtask(() async {
@@ -86,9 +83,8 @@ void _handleUncaughtError(
           },
         ),
       );
-    } catch (auditError) {
-      // Si la auditoría falla, solo logueamos, no queremos loops de error
-      debugPrint('Failed to send audit log: $auditError');
+    } catch (_) {
+      // Si la auditoría falla, no hacemos nada para evitar loops de error
     }
   });
 }

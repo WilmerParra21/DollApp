@@ -20,6 +20,9 @@ class AppRoutes {
       settings: settings,
       builder: (_) => switch (settings.name) {
         calculator => CalculatorScreen(
+          fixedRateId: settings.arguments is CalculatorRouteArgs
+              ? (settings.arguments! as CalculatorRouteArgs).fixedRateId
+              : null,
           fixedRateCode: settings.arguments is CalculatorRouteArgs
               ? (settings.arguments! as CalculatorRouteArgs).fixedRateCode
               : null,
@@ -38,8 +41,14 @@ class AppRoutes {
 }
 
 class CalculatorRouteArgs {
-  const CalculatorRouteArgs({this.fixedRateCode, this.fromCode, this.toCode});
+  const CalculatorRouteArgs({
+    this.fixedRateId,
+    this.fixedRateCode,
+    this.fromCode,
+    this.toCode,
+  });
 
+  final String? fixedRateId;
   final String? fixedRateCode;
   final String? fromCode;
   final String? toCode;

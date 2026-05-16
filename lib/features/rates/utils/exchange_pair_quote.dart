@@ -3,9 +3,9 @@ import '../models/exchange_rate_snapshot.dart';
 
 /// Normaliza códigos de moneda conocidos como alias (p. ej. BS → VES).
 String canonicalCurrencyCode(String raw) {
-  final t = raw.trim().toUpperCase();
-  if (t == 'BS' || t == 'BS.') return 'VES';
-  return t;
+  final upper = raw.trim().toUpperCase();
+  if (upper == 'BS') return 'VES';
+  return upper;
 }
 
 /// Interpretación de una fila [ExchangeRate]: [anchor] cotiza contra [counter]
@@ -45,22 +45,24 @@ ParsedQuote? tryParseQuote(ExchangeRate rate) {
   final qty = rate.displayValue ?? rate.value;
   if (!qty.isFinite || qty <= 0) return null;
 
-  final conv = rate.conversionCode?.trim();
-  if (conv != null && conv.isNotEmpty) {
-    return ParsedQuote(
-      row: rate,
-      anchor: canonicalCurrencyCode(conv),
-      counter: canonicalCurrencyCode(
-        rate.displayCurrencyCode ?? rate.code,
-      ),
-      unitsPerAnchor: qty,
-    );
+  final rawAnchor = rate.conversionCode?.trim() ?? rate.displayCurrencyCode?.trim();
+  final rawCounter = rate.moneyType?.trim();
+  final anchor = rawAnchor != null && rawAnchor.isNotEmpty
+      ? canonicalCurrencyCode(rawAnchor)
+      : canonicalCurrencyCode(rate.code);
+  final counter = rawCounter != null && rawCounter.isNotEmpty
+      ? canonicalCurrencyCode(rawCounter)
+      : canonicalCurrencyCode(rate.code);
+
+  if (anchor == counter) {
+    // Evitar tasas inválidas donde la moneda base y la moneda contra son la misma.
+    return null;
   }
 
   return ParsedQuote(
     row: rate,
-    anchor: canonicalCurrencyCode(rate.code),
-    counter: canonicalCurrencyCode(rate.displayCurrencyCode ?? 'VES'),
+    anchor: anchor,
+    counter: counter,
     unitsPerAnchor: qty,
   );
 }

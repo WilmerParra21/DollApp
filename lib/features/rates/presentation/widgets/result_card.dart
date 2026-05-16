@@ -70,8 +70,7 @@ class ResultCard extends StatelessWidget {
               children: [
                 _InfoChip(
                   icon: Icons.payments_outlined,
-                  text:
-                      'Moneda: ${rate.displayCurrencyCode ?? rate.moneyType ?? rate.code}',
+                  text: 'Moneda: ${rate.displayCurrencyCode ?? rate.moneyType ?? rate.code}',
                 ),
                 if (rate.conversionCode != null)
                   _InfoChip(

@@ -13,12 +13,14 @@ import '../../utils/exchange_pair_quote.dart';
 
 class CalculatorScreen extends StatefulWidget {
   const CalculatorScreen({
+    this.fixedRateId,
     this.fixedRateCode,
     this.initialFromCode,
     this.initialToCode,
     super.key,
   });
 
+  final String? fixedRateId;
   final String? fixedRateCode;
   final String? initialFromCode;
   final String? initialToCode;
@@ -42,8 +44,8 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
   bool _isLoading = true;
   bool _isRefreshing = false;
 
-  String _fromCode = 'USD';
-  String _toCode = 'VES';
+  String _fromCode = '';
+  String _toCode = '';
   int _selectedQuickAmount = 1;
 
   @override
@@ -52,6 +54,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
     _snapshotNotifier = HttpExchangeRateRepository.instance.snapshotNotifier;
     _loadCachedSnapshot();
     _startBackgroundRefresh();
+
   }
 
   Future<void> _loadCachedSnapshot() async {
@@ -120,6 +123,23 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       return;
     }
 
+    final fixedId = widget.fixedRateId?.trim();
+    if (fixedId != null && fixedId.isNotEmpty) {
+      final rate = snapshot.tryById(fixedId);
+      if (rate == null) {
+        return;
+      }
+      final parsed = tryParseQuote(rate);
+      if (parsed == null) {
+        _fixedQuoteInvalid = true;
+        return;
+      }
+      _fromCode = parsed.anchor;
+      _toCode = parsed.counter;
+      _appliedRouteDirection = true;
+      return;
+    }
+
     final fixed = widget.fixedRateCode?.trim();
     if (fixed != null && fixed.isNotEmpty) {
       final rate = snapshot.tryByCode(fixed);
@@ -137,8 +157,6 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       return;
     }
 
-    var pair = findQuoteForCurrencyPair(snapshot, 'USD', 'VES');
-
     ParsedQuote? firstParsed;
     for (final rate in snapshot.rates) {
       final parsed = tryParseQuote(rate);
@@ -147,11 +165,10 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
         break;
       }
     }
-    pair ??= firstParsed;
 
-    if (pair != null) {
-      _fromCode = pair.anchor;
-      _toCode = pair.counter;
+    if (firstParsed != null) {
+      _fromCode = firstParsed.anchor;
+      _toCode = firstParsed.counter;
     }
     _appliedRouteDirection = true;
   }
@@ -163,7 +180,24 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       return;
     }
 
-    final q = findQuoteForCurrencyPair(snapshot, _fromCode, _toCode);
+    ParsedQuote? q;
+    final fixedId = widget.fixedRateId?.trim();
+    if (fixedId != null && fixedId.isNotEmpty) {
+      final fixedRate = snapshot.tryById(fixedId);
+      if (fixedRate != null) {
+        final parsed = tryParseQuote(fixedRate);
+        if (parsed != null) {
+          final from = canonicalCurrencyCode(_fromCode);
+          final to = canonicalCurrencyCode(_toCode);
+          if ((parsed.anchor == from && parsed.counter == to) ||
+              (parsed.anchor == to && parsed.counter == from)) {
+            q = parsed;
+          }
+        }
+      }
+    }
+
+    q ??= findQuoteForCurrencyPair(snapshot, _fromCode, _toCode);
     if (q == null) {
       _activeQuote = null;
       _missingQuoteBinding = true;
@@ -207,9 +241,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
     }
 
     final reciprocal = 1.0 / n;
-    final conversionLabel = rate.conversionCode == null
-        ? ''
-        : ' (${rate.conversionCode})';
+    final conversionLabel = ' (${quote.anchor}/${quote.counter})';
 
     // Misma formula que usa el resultado: identica al boton invertir (x o / por N).
     final direct =
@@ -274,9 +306,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
                 }
 
                 final currencyNames = _namesForCalculatorPair(ratesSnapshot);
-                final currencyBadges = currencyNames.map(
-                  (key, _) => MapEntry(key, key),
-                );
+                final currencyBadges = _badgesForCalculatorPair(ratesSnapshot);
 
                 return _CalculatorContent(
                   amountController: _amountController,
@@ -349,15 +379,27 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
     });
   }
 
-  Map<String, String> _namesForCalculatorPair(ExchangeRateSnapshot snapshot) {
-    final names = <String, String>{
-      for (final rate in snapshot.rates) canonicalCurrencyCode(rate.code): rate.name,
-      canonicalCurrencyCode('VES'): 'Bolivar digital',
-    };
+Map<String, String> _namesForCalculatorPair(ExchangeRateSnapshot snapshot) {
     return {
       for (final entry in {_fromCode, _toCode}.map((c) => canonicalCurrencyCode(c)))
-        entry: names[entry] ?? entry,
+        entry: entry,
     };
+  }
+
+  Map<String, String> _badgesForCalculatorPair(ExchangeRateSnapshot snapshot) {
+    final badges = <String, String>{};
+    for (final code in {_fromCode, _toCode}.map((c) => canonicalCurrencyCode(c)).toSet()) {
+      final matchingRate = snapshot.rates.firstWhere(
+        (r) => r.displayCurrencyCode?.toUpperCase() == code.toUpperCase() ||
+                 r.code.toUpperCase() == code.toUpperCase(),
+        orElse: () => snapshot.rates.firstWhere(
+          (r) => r.conversionCode?.toUpperCase() == code.toUpperCase(),
+          orElse: () => snapshot.rates.first,
+        ),
+      );
+      badges[code] = matchingRate.symbol;
+    }
+    return badges;
   }
 
   void _setQuickAmount(int amount) {
@@ -373,7 +415,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
   void _clear() {
     setState(() {
       _selectedQuickAmount = -1;
-      _amountController.text = '0';
+      _amountController.text = '';
       _amountController.selection = TextSelection.fromPosition(
         TextPosition(offset: _amountController.text.length),
       );
@@ -387,7 +429,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       return;
     }
     await Clipboard.setData(
-      ClipboardData(text: numeric.toStringAsFixed(3).toString()),
+      ClipboardData(text: CurrencyFormatter.decimal(numeric)),
     );
     _showSnackBar('Resultado copiado');
   }
@@ -530,6 +572,7 @@ class _CalculatorContent extends StatelessWidget {
                     controller: amountController,
                     onChanged: onAmountChanged,
                     onClear: onClear,
+                    currency: currencyNames[fromCode]!
                   ),
                   const SizedBox(height: 18),
                   _CurrencyFlow(
@@ -581,16 +624,18 @@ class _AmountField extends StatelessWidget {
     required this.controller,
     required this.onChanged,
     required this.onClear,
+    required this.currency, 
   });
 
   final TextEditingController controller;
   final VoidCallback onChanged;
   final VoidCallback onClear;
-
+  final String currency;
+  
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-
+  
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -603,27 +648,76 @@ class _AmountField extends StatelessWidget {
         ),
         const SizedBox(height: 4),
         TextField(
-          controller: controller,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          inputFormatters: [
-            FilteringTextInputFormatter.allow(RegExp(r'[0-9,.]')),
-          ],
-          onChanged: (_) => onChanged(),
-          style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-            fontWeight: FontWeight.w600,
-            height: 1,
-          ),
-          decoration: InputDecoration(
-            hintText: '0',
-            suffixIcon: IconButton(
-              tooltip: 'Limpiar monto',
-              icon: const Icon(Icons.cancel_rounded),
-              color: colorScheme.onSurfaceVariant,
-              onPressed: onClear,
+  controller: controller,
+  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+  inputFormatters: [
+    FilteringTextInputFormatter.allow(RegExp(r'[0-9,.]')),
+  ],
+  onChanged: (_) => onChanged(),
+  style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+        fontWeight: FontWeight.w600,
+        height: 1.1, // Ajuste ligero para alineación vertical
+      ),
+  decoration: InputDecoration(
+    hintText: '0',
+    contentPadding: const EdgeInsets.only(right: 12), // Quitamos el padding izquierdo para que el prefijo pegue
+    
+    // USAMOS prefix PARA CONTROL TOTAL
+    prefixIcon: Container(
+      margin: const EdgeInsets.only(right: 12), // Espacio entre el fondo del símbolo y el número
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      decoration: BoxDecoration(
+        // Color de fondo que ocupa toda la sección izquierda
+        color: Theme.of(context).brightness == Brightness.dark
+            ? Colors.white.withValues(alpha: 0.08)
+            : Colors.black.withValues(alpha: 0.04),
+        // Redondeamos solo las esquinas de la izquierda para que encaje con el borde del TextField
+        borderRadius: const BorderRadius.only(
+          topLeft: Radius.circular(12),
+          bottomLeft: Radius.circular(12),
+        ),
+      ),
+      // Usamos Center con heightFactor para que el fondo se estire
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            currency,
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.primary,
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
             ),
           ),
-        ),
-      ],
+        ],
+      ),
+    ),
+    
+    // ESTO ES CLAVE: Quitar las restricciones por defecto
+    prefixIconConstraints: const BoxConstraints(
+      minHeight: 64, // Ajusta esto al alto de tu TextField
+      minWidth: 60,
+    ),
+    
+    suffixIcon: IconButton(
+      tooltip: 'Limpiar monto',
+      icon: const Icon(Icons.cancel_rounded),
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+      onPressed: onClear,
+    ),
+    
+    // BORDES: Asegúrate de que el radio coincida con el del Container del prefijo
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: BorderSide.none,
+    ),
+    filled: true,
+    fillColor: Theme.of(context).brightness == Brightness.dark
+        ? Colors.white.withValues(alpha: 0.05)
+        : Colors.black.withValues(alpha: 0.02),
+  ),
+), ],
     );
   }
 }
@@ -701,6 +795,7 @@ class _CurrencyPickerCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final showName = name.trim().isNotEmpty && name.trim() != code.trim();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -741,13 +836,14 @@ class _CurrencyPickerCard extends StatelessWidget {
                           style: Theme.of(context).textTheme.titleMedium
                               ?.copyWith(fontWeight: FontWeight.w900),
                         ),
-                        Text(
-                          name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.labelSmall
-                              ?.copyWith(color: colorScheme.onSurfaceVariant),
-                        ),
+                        if (showName)
+                          Text(
+                            name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(color: colorScheme.onSurfaceVariant),
+                          ),
                       ],
                     ),
                   ),
@@ -806,7 +902,7 @@ class _ResultPanel extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            '${CurrencyFormatter.money(amount, fromCode)} a $toCode',
+            '${CurrencyFormatter.moneyWithCode(amount, toCode)} a $fromCode',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(

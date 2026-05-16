@@ -48,7 +48,6 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
       );
       return _snapshotDb!;
     } catch (error, stackTrace) {
-      debugPrint('HttpExchangeRateRepository._getSnapshotDb failed: $error');
       // Log error to audit service (async, non-blocking)
       Future.microtask(() async {
         try {
@@ -63,8 +62,8 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
               },
             ),
           );
-        } catch (auditError) {
-          debugPrint('Failed to send audit log: $auditError');
+        } catch (_) {
+          // Silently fail to avoid error loops
         }
       });
       rethrow;
@@ -85,20 +84,16 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
       final histories = results[1] as Map<String, List<ExchangeRateHistoryPoint>>;
 
       final updatedAt = liveRates.updatedAt;
-      final liveUsdValue = liveRates.tryByCode('USD')?.value;
-      final usdValue = liveUsdValue != null && liveUsdValue > 0
-          ? liveUsdValue
-          : previousSnapshot?.tryByCode('USD')?.value ?? 1;
       final liveSnapshotRates = _buildLiveSnapshotRates(
         liveRates: liveRates,
         updatedAt: updatedAt,
         previousSnapshot: previousSnapshot,
-        usdValue: usdValue,
       );
       final rates = _ratesWithHistory(liveSnapshotRates, histories);
 
-      _cachedSnapshot = ExchangeRateSnapshot(
-        rates: rates,
+      final sortedRates = _sortRatesWithFavorites(rates);
+    _cachedSnapshot = ExchangeRateSnapshot(
+        rates: sortedRates,
         updatedAt: updatedAt,
         usedFallback: false,
       );
@@ -106,9 +101,6 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
       snapshotNotifier.value = _cachedSnapshot;
       return _cachedSnapshot!;
     } catch (error, stackTrace) {
-      debugPrint('HttpExchangeRateRepository.getRates failed: $error');
-      debugPrintStack(stackTrace: stackTrace);
-
       // Log error to audit service (async, non-blocking)
       Future.microtask(() async {
         try {
@@ -125,8 +117,8 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
               },
             ),
           );
-        } catch (auditError) {
-          debugPrint('Failed to send audit log: $auditError');
+        } catch (_) {
+          // Silently fail
         }
       });
 
@@ -154,28 +146,47 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
     required _SupabaseRates liveRates,
     required DateTime updatedAt,
     required ExchangeRateSnapshot? previousSnapshot,
-    required double usdValue,
   }) {
-    final codes =
-        <String>{
-          ...liveRates.entries.keys,
-          if (liveRates.entries.containsKey('USD')) 'USD',
-        }.toList()..sort((a, b) {
-          const priority = {'USD': 0, 'EUR': 1, 'COP': 2};
-          return (priority[a] ?? 99).compareTo(priority[b] ?? 99);
-        });
+    final previousRatesByPairKey = {
+      for (final rate in previousSnapshot?.rates ?? const <ExchangeRate>[])
+        _rateBindingKey(
+          fromCurrency: rate.moneyType ?? rate.code,
+          toCurrency: rate.conversionCode ?? rate.displayCurrencyCode,
+          name: rate.name,
+        ): rate,
+    };
 
-    return codes.map((code) {
-      final entry = liveRates.entries[code]!;
+    final entries = liveRates.entries.asMap().entries.toList()
+      ..sort((a, b) {
+        return a.key.compareTo(b.key);
+      });
+
+    return entries.map((entry) {
+      final rateEntry = entry.value;
+      final pairKey = _rateBindingKey(
+        fromCurrency: rateEntry.fromCurrency ?? rateEntry.code,
+        toCurrency: rateEntry.conversionCode ?? rateEntry.displayCurrencyCode,
+        name: rateEntry.name,
+      );
+      final previous =
+          previousSnapshot?.tryById(rateEntry.id) ??
+          previousRatesByPairKey[pairKey];
       return _rateFromLiveValue(
-        base: _baseRateForCode(code, updatedAt),
-        entry: entry,
+        id: rateEntry.id,
+        base: _baseRateForCode(rateEntry.code, updatedAt),
+        entry: rateEntry,
         updatedAt: updatedAt,
-        previous: previousSnapshot?.tryByCode(code),
-        usdValue: usdValue,
+        previous: previous,
         normalizeValue: _normalizeLiveRateValue,
+        isFavorite: previous?.isFavorite ?? false,
       );
     }).toList();
+  }
+
+  List<ExchangeRate> _sortRatesWithFavorites(List<ExchangeRate> rates) {
+    final favorites = rates.where((rate) => rate.isFavorite).toList();
+    final others = rates.where((rate) => !rate.isFavorite).toList();
+    return [...favorites, ...others];
   }
 
   Future<ExchangeRateSnapshot> _snapshotWithSavedHistory(
@@ -191,10 +202,32 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
 
     final snapshot = await _loadSavedSnapshot();
     if (snapshot != null) {
-      _cachedSnapshot = snapshot;
-      snapshotNotifier.value = snapshot;
+      _cachedSnapshot = snapshot.copyWith(
+        rates: _sortRatesWithFavorites(snapshot.rates),
+      );
+      snapshotNotifier.value = _cachedSnapshot;
     }
     return snapshot;
+  }
+
+  Future<void> setFavorite(String id, bool isFavorite) async {
+    final snapshot = _cachedSnapshot ?? await _loadSavedSnapshot();
+    if (snapshot == null) {
+      return;
+    }
+
+    final updatedRates = snapshot.rates.map((rate) {
+      if (rate.id == id) {
+        return rate.copyWith(isFavorite: isFavorite);
+      }
+      return rate;
+    }).toList();
+
+    _cachedSnapshot = snapshot.copyWith(
+      rates: _sortRatesWithFavorites(updatedRates),
+    );
+    snapshotNotifier.value = _cachedSnapshot;
+    await _saveSnapshot(_cachedSnapshot!);
   }
 
   List<ExchangeRate> _ratesWithHistory(
@@ -202,8 +235,8 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
     Map<String, List<ExchangeRateHistoryPoint>> histories,
   ) {
     return rates.map((rate) {
-      final remotePoints =
-          histories[rate.code] ?? const <ExchangeRateHistoryPoint>[];
+      final remotePoints = histories[_historyBindingKey(rate.name)] ??
+          const <ExchangeRateHistoryPoint>[];
       final currentValue = rate.displayValue ?? rate.value;
       final currentCurrency = rate.displayCurrencyCode ?? rate.code;
       final today = DateTime(
@@ -259,19 +292,16 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
     if (AppConfig.supabaseAnonKey.isEmpty) {
       throw const FormatException('Falta configurar SUPABASE_ANON_KEY');
     }
-
+    
     final uri = Uri.https(
       '${AppConfig.supabaseProjectRef}.supabase.co',
       '/functions/v1/tasas-divisas',
     );
 
-    debugPrint('Requesting rates from $uri');
-
     final response = await _client
         .get(uri, headers: _supabaseHeaders())
         .timeout(const Duration(seconds: 12));
-    debugPrint('Rates response status: ${response.statusCode}');
-   debugPrint('Rate response: ${response.body}');
+     //   print("Tasas: ${response.body}");
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw FormatException('Supabase respondio ${response.statusCode}');
     }
@@ -318,12 +348,9 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
         '/functions/v1/get-tasas-historico',
       );
      
-      debugPrint('Requesting rate history from $uri');
-
       final response = await _client
           .get(uri, headers: _supabaseHeaders())
           .timeout(const Duration(seconds: 12));
-      debugPrint('Rate history response status: ${response.statusCode}');
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw FormatException(
@@ -349,11 +376,6 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
 
       return histories;
     } catch (error, stackTrace) {
-      debugPrint(
-        'HttpExchangeRateRepository._fetchRemoteHistories failed: $error',
-      );
-      debugPrintStack(stackTrace: stackTrace);
-
       // Log error to audit service (async, non-blocking)
       Future.microtask(() async {
         try {
@@ -368,7 +390,7 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
             ),
           );
         } catch (auditError) {
-          debugPrint('Failed to send audit log: $auditError');
+        //  debugPrint('Failed to send audit log: $auditError');
         }
       });
 
@@ -431,8 +453,7 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
     final histories = <String, List<ExchangeRateHistoryPoint>>{};
 
     for (final entry in decoded.entries) {
-      final code =
-          _currencyCodeFromName(entry.key) ?? _normalizeCurrencyCode(entry.key);
+      final historyKey = _historyBindingKey(entry.key);
       final rawPoints = entry.value;
       if (rawPoints is! List) {
         continue;
@@ -446,7 +467,9 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
 
         final date = _extractDate(rawPoint['fecha'] ?? rawPoint['created_at']);
         final value = _tryParseNumber(rawPoint['monto'] ?? rawPoint['valor']);
-        final currencyCode = _cleanString(rawPoint['moneda']) ?? 'VES';
+        final currencyCode = _normalizeCurrencyCode(
+          _cleanString(rawPoint['moneda']) ?? entry.key,
+        );
         if (date == null || value == null || value <= 0) {
           continue;
         }
@@ -462,135 +485,171 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
 
       points.sort((a, b) => a.date.compareTo(b.date));
       if (points.isNotEmpty) {
-        histories[code] = points;
+        histories[historyKey] = points;
       }
     }
 
     return histories;
   }
 
-  Map<String, _SupabaseRateEntry> _extractRateEntries(
-    Map<String, dynamic> decoded,
-  ) {
-    final entries = <String, _SupabaseRateEntry>{};
+List<_SupabaseRateEntry> _extractRateEntries(
+     Map<String, dynamic> decoded,
+   ) {
+     final entries = <_SupabaseRateEntry>[];
+     final seenEntryKeys = <String>{};
 
-    final tasas = decoded['tasas'];
-    if (tasas is List) {
-      for (final item in tasas) {
-        if (item is Map<String, dynamic>) {
-          final rawDisplayCurrency = item['moneda'];
-          final rawConversionCode = item['conver'] ?? item['conversion'];
-          final rawName = item['nombre'] ?? item['name'];
-          final rawCode =
-              rawConversionCode ??
-              rawDisplayCurrency ??
-              item['codigo'] ??
-              item['code'];
-          if (rawCode == null) {
-            continue;
-          }
+final tasas = decoded['tasas'];
+      if (tasas is List) {
+        for (final item in tasas) {
+          if (item is Map<String, dynamic>) {
+            final rawFromCurrency = item['moneda'];
+            final rawToCurrency = item['conver'] ?? item['conversion'];
+            final rawName = item['nombre'] ?? item['name'];
+            final rawSymbol = item['simbolo'];
+            final rawCode =
+                rawToCurrency ??
+                rawFromCurrency ??
+                item['codigo'] ??
+                item['code'];
+            if (rawCode == null) {
+              continue;
+            }
 
-          final displayCurrencyCode = _cleanString(rawDisplayCurrency);
-          final conversionCode = _cleanString(rawConversionCode) == null
-              ? null
-              : _normalizeCurrencyCode(rawConversionCode.toString());
-          final code = _rateCodeFromApiItem(
-            rawCode: rawCode.toString(),
-            displayCurrencyCode: displayCurrencyCode,
-            name: _cleanString(rawName),
-            conversionCode: conversionCode,
-          );
-          final rawValue = item['valor'] ?? item['monto'] ?? item['rate'];
-          final value = _tryParseNumber(rawValue);
-          entries[code] = _SupabaseRateEntry(
-            code: code,
-            value: value,
-            name: _cleanString(rawName),
-            moneyType: _cleanString(item['type-money'] ?? item['type_money']),
-            displayCurrencyCode: displayCurrencyCode,
-            conversionCode: conversionCode,
-            sourceUpdatedAtLabel: _cleanString(
+            final fromCurrency = _cleanString(rawFromCurrency);
+            final toCurrency = _cleanString(rawToCurrency);
+            final normalizedName = _cleanString(rawName);
+            final displayCurrencyCode = toCurrency == null
+                ? null
+                : _normalizeCurrencyCode(toCurrency);
+            final conversionCode = toCurrency == null
+                ? null
+                : _normalizeCurrencyCode(rawToCurrency.toString());
+            final code = _rateCodeFromApiItem(
+              rawCode: rawCode.toString(),
+              fromCurrency: fromCurrency,
+              toCurrency: toCurrency,
+              name: normalizedName,
+            );
+            final rawValue = item['valor'] ?? item['monto'] ?? item['rate'];
+            final value = _tryParseNumber(rawValue);
+            final sourceUpdatedAtLabel = _cleanString(
               item['fechaActualizacion'] ?? item['create_date'],
-            ),
-          );
+            );
+_cleanString(item['type-money'] ?? item['type_money']);
+            final id = [
+              conversionCode ?? code,
+              displayCurrencyCode ?? code,
+              normalizedName ?? code,
+              _normalizeCurrencyCode(fromCurrency ?? ''),
+            ].join('-');
+            final entryKey = [
+              code,
+              value?.toString() ?? '',
+              normalizedName ?? '',
+              fromCurrency ?? '',
+              displayCurrencyCode ?? '',
+              conversionCode ?? '',
+              sourceUpdatedAtLabel ?? '',
+            ].join('|');
+
+            if (seenEntryKeys.contains(entryKey)) {
+              continue;
+            }
+            seenEntryKeys.add(entryKey);
+
+entries.add(_SupabaseRateEntry(
+              id: id,
+              code: code,
+              value: value,
+              name: normalizedName,
+              moneyType: fromCurrency == null
+                  ? null
+                  : _normalizeCurrencyCode(fromCurrency),
+              displayCurrencyCode: displayCurrencyCode,
+              conversionCode: conversionCode,
+              sourceUpdatedAtLabel: sourceUpdatedAtLabel,
+              simbolo: _cleanString(rawSymbol),
+            ));
+          }
         }
       }
-    }
 
-    for (final entry in decoded.entries) {
-      final value = _tryParseNumber(entry.value);
-      if (value != null) {
-        final code = _normalizeCurrencyCode(entry.key);
-        entries.putIfAbsent(
-          code,
-          () => _SupabaseRateEntry(code: code, value: value),
-        );
-      }
-    }
+     // Solo aplicar fallback flat si la pasada estructurada no produjo resultados
+     if (entries.isEmpty) {
+       for (final entry in decoded.entries) {
+         final value = _tryParseNumber(entry.value);
+         if (value != null) {
+           final code = _normalizeCurrencyCode(entry.key);
+           // Saltar claves que no son monedas
+           if ({'tasas', 'fecha', 'updated_at', 'created_at', 'version'}
+               .contains(code.toLowerCase())) {
+             continue;
+           }
+            entries.add(
+              _SupabaseRateEntry(
+                id: code,
+                code: code,
+                value: value,
+                simbolo: null,
+              ),
+            );
+         }
+       }
+     }
 
-    return entries;
-  }
+     return entries;
+   }
 
   String _rateCodeFromApiItem({
     required String rawCode,
-    required String? displayCurrencyCode,
+    required String? fromCurrency,
+    required String? toCurrency,
     required String? name,
-    required String? conversionCode,
   }) {
+    if (toCurrency != null && toCurrency.isNotEmpty) {
+      return _normalizeCurrencyCode(toCurrency);
+    }
+    if (fromCurrency != null && fromCurrency.isNotEmpty) {
+      return _normalizeCurrencyCode(fromCurrency);
+    }
+    final displayCurrencyCode = toCurrency;
+    final conversionCode = toCurrency;
     final normalizedDisplayCode = displayCurrencyCode == null
         ? null
         : _normalizeCurrencyCode(displayCurrencyCode);
-    final nameCode = _currencyCodeFromName(name);
 
-    if (nameCode != null &&
-        (normalizedDisplayCode == null ||
-            _isVisualCurrency(normalizedDisplayCode))) {
-      return nameCode;
-    }
-
-    if (normalizedDisplayCode != null &&
-        !_isVisualCurrency(normalizedDisplayCode)) {
+    // Cuando la tasa se expresa en Bs, usamos el código de conversión
+    // para mostrar la moneda extranjera (USD, EUR, USDT, etc.).
+    // Si la tasa se expresa en una moneda distinta a Bs, usamos esa moneda
+    // para evitar que varias tasas con el mismo destino se sobrescriban.
+    if (normalizedDisplayCode != null && normalizedDisplayCode.isNotEmpty &&
+        normalizedDisplayCode != 'VES') {
       return normalizedDisplayCode;
     }
 
-    return conversionCode ?? _normalizeCurrencyCode(rawCode);
+    if (conversionCode != null && conversionCode.isNotEmpty) {
+      return conversionCode;
+    }
+
+    return _normalizeCurrencyCode(rawCode);
   }
 
-  String? _currencyCodeFromName(String? name) {
-    if (name == null) {
-      return null;
-    }
-
-    final normalized = _asciiUpper(name);
-    if (normalized.contains('USDT') || normalized.contains('PARALELO')) {
-      return 'USDT';
-    }
-    if (normalized.contains('PESO') || normalized.contains('COLOMB')) {
-      return 'COP';
-    }
-    if (normalized.contains('EURO')) {
-      return 'EUR';
-    }
-    if (normalized.contains('DOLAR') || normalized.contains('DÓLAR')) {
-      return 'USD';
-    }
-    return null;
-  }
-
-  bool _isVisualCurrency(String code) {
-    return code == 'VES' || code == 'BS' || code == 'BS.';
+  String _rateBindingKey({
+    required String? fromCurrency,
+    required String? toCurrency,
+    required String? name,
+  }) {
+    final from = _normalizeCurrencyCode(fromCurrency ?? '');
+    final to = _normalizeCurrencyCode(toCurrency ?? '');
+    final label = _asciiUpper(name ?? '');
+    return '$from->$to|$label';
   }
 
   String _normalizeCurrencyCode(String value) {
-    final normalized = _asciiUpper(value);
-    return switch (normalized) {
-      'DOLAR' || 'DÓLAR' || 'DOLAR_BCV' || 'USD_BCV' => 'USD',
-      'VES' || 'BS' || 'BS.' => 'VES',
-      'EURO' || 'EURO_BCV' || 'EUR_BCV' => 'EUR',
-      'PESO' || 'PESO_COP' || 'COP_PESO' => 'COP',
-      _ => normalized,
-    };
+    return _asciiUpper(value);
   }
+
+  String _historyBindingKey(String value) => _asciiUpper(value);
 
   String _asciiUpper(String value) {
     return value
@@ -605,43 +664,19 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
   }
 
   ExchangeRate _baseRateForCode(String code, DateTime updatedAt) {
-    final mockRate = MockRates.tryByCode(code);
-    if (mockRate != null) {
-      return mockRate;
-    }
-
     return ExchangeRate(
+      id: code,
       code: code,
-      name: _currencyName(code),
+      name: code,
       source: 'API de tasas',
       value: 0,
-      symbol: _currencySymbol(code),
+      symbol: code.length <= 3 ? code : code.substring(0, 3),
       updatedAt: updatedAt,
       isOfficial: true,
       changePercent: 0,
       sparklineValues: const [],
       historyPoints: const [],
     );
-  }
-
-  String _currencyName(String code) {
-    return switch (code) {
-      'USD' => 'Dolar estadounidense',
-      'EUR' => 'Euro',
-      'COP' => 'Peso colombiano',
-      'USDT' => 'USDT',
-      'CNY' || 'CNH' || 'YUAN' => 'Yuan',
-      _ => code,
-    };
-  }
-
-  String _currencySymbol(String code) {
-    return switch (code) {
-      'USD' || 'USDT' || 'COP' => r'$',
-      'EUR' => '€',
-      'CNY' || 'CNH' || 'YUAN' => '¥',
-      _ => code.length <= 3 ? code : code.substring(0, 3),
-    };
   }
 
   String? _cleanString(Object? value) {
@@ -709,56 +744,59 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
   }
 
   ExchangeRate _rateFromLiveValue({
+    required String id,
     required ExchangeRate base,
     required _SupabaseRateEntry entry,
     required DateTime updatedAt,
     required ExchangeRate? previous,
-    required double usdValue,
-    required double Function(String code, double value, double usdValue)
-        normalizeValue,
+    required double Function(String code, double value) normalizeValue,
+    required bool isFavorite,
   }) {
     final hasValidValue = entry.value != null && entry.value! > 0;
     final normalizedValue = hasValidValue
-        ? normalizeValue(entry.code, entry.value!, usdValue)
+        ? normalizeValue(entry.code, entry.value!)
         : previous?.value ?? base.value;
     final sourceDate = hasValidValue
         ? entry.sourceUpdatedAtLabel ?? previous?.sourceUpdatedAtLabel
         : _fallbackSourceUpdatedAtLabel(previous, updatedAt);
-    final moneyType = entry.moneyType ?? previous?.moneyType ?? entry.code;
+    final moneyType = entry.fromCurrency ?? previous?.moneyType ?? entry.code;
+    final inferredDisplayCurrencyCode =
+        entry.conversionCode ?? entry.displayCurrencyCode;
     final displayCurrencyCode = hasValidValue
-        ? (entry.code == 'COP' ? 'COP' : (entry.displayCurrencyCode ?? entry.moneyType ?? 'VES'))
+        ? (inferredDisplayCurrencyCode ?? entry.code)
         : (previous?.displayCurrencyCode ??
-              entry.displayCurrencyCode ??
-              entry.moneyType ??
-              (entry.code == 'COP' ? 'COP' : 'VES'));
+              inferredDisplayCurrencyCode ??
+              entry.code);
     final displayValue = hasValidValue
         ? entry.value
         : previous?.displayValue ?? normalizedValue;
 
-    return ExchangeRate(
-      code: base.code,
-      name: entry.name ?? base.name,
-      source: base.source,
-      value: normalizedValue,
-      symbol: base.symbol,
-      updatedAt: hasValidValue ? updatedAt : previous?.updatedAt ?? updatedAt,
-      isOfficial: base.isOfficial,
-      changePercent: base.changePercent,
-      sparklineValues: _scaledSparkline(
-        previous?.sparklineValues ?? base.sparklineValues,
-        normalizedValue,
-      ),
-      historyPoints: previous?.historyPoints ?? base.historyPoints,
-      moneyType: moneyType,
-      sourceUpdatedAtLabel: sourceDate,
-      keptPreviousValue: !hasValidValue,
-      displayValue: displayValue,
-      displayCurrencyCode: displayCurrencyCode,
-      conversionCode: entry.conversionCode ?? previous?.conversionCode,
-    );
+return ExchangeRate(
+       id: id,
+       code: base.code,
+       name: entry.name ?? base.name,
+       source: base.source,
+       value: normalizedValue,
+       symbol: entry.simbolo ?? base.symbol,
+       updatedAt: hasValidValue ? updatedAt : previous?.updatedAt ?? updatedAt,
+       isOfficial: base.isOfficial,
+       changePercent: base.changePercent,
+       sparklineValues: _scaledSparkline(
+         previous?.sparklineValues ?? base.sparklineValues,
+         normalizedValue,
+       ),
+       historyPoints: previous?.historyPoints ?? base.historyPoints,
+       moneyType: moneyType,
+       sourceUpdatedAtLabel: sourceDate,
+       keptPreviousValue: !hasValidValue,
+       displayValue: displayValue,
+       displayCurrencyCode: displayCurrencyCode,
+       conversionCode: entry.conversionCode ?? previous?.conversionCode,
+       isFavorite: isFavorite,
+     );
   }
 
-  double _normalizeLiveRateValue(String code, double value, double usdValue) {
+  double _normalizeLiveRateValue(String code, double value) {
     return value;
   }
 
@@ -787,7 +825,6 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
     } catch (error, stackTrace) {
-      debugPrint('HttpExchangeRateRepository._saveSnapshot failed: $error');
       // Log error to audit service (async, non-blocking)
       Future.microtask(() async {
         try {
@@ -803,88 +840,102 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
               },
             ),
           );
-        } catch (auditError) {
-          debugPrint('Failed to send audit log: $auditError');
+        } catch (_) {
+          // Silently fail
         }
       });
       rethrow;
     }
   }
 
-  Future<ExchangeRateSnapshot?> _loadSavedSnapshot() async {
+Future<ExchangeRateSnapshot?> _loadSavedSnapshot() async {
+  try {
+    final db = await _getSnapshotDb();
+    final maps = await db.query(_snapshotTable, where: 'id = ?', whereArgs: [1]);
+    if (maps.isEmpty) return null;
     try {
-      final db = await _getSnapshotDb();
-      final maps = await db.query(_snapshotTable, where: 'id = ?', whereArgs: [1]);
-      if (maps.isEmpty) return null;
-      try {
-        final decoded = jsonDecode(maps.first['data'] as String);
-        if (decoded is Map<String, dynamic>) {
-          return ExchangeRateSnapshot.fromJson(decoded);
-        }
-      } catch (parseError, parseStackTrace) {
-        debugPrint('HttpExchangeRateRepository._loadSavedSnapshot parse failed: $parseError');
-        // Log parse error to audit service (async, non-blocking)
-        Future.microtask(() async {
-          try {
-            await AuditService.instance.logError(
-              AuditLog(
-                accion: 'LOAD_SNAPSHOT_PARSE',
-                mensaje: parseError.toString(),
-                codigo: parseError.runtimeType.toString(),
-                metadatos: {
-                  'rawDataLength': (maps.first['data'] as String).length,
-                  'stackTrace': parseStackTrace.toString(),
-                },
-              ),
-            );
-          } catch (auditError) {
-            debugPrint('Failed to send audit log: $auditError');
-          }
-        });
+      final decoded = jsonDecode(maps.first['data'] as String);
+      if (decoded is Map<String, dynamic>) {
+        return ExchangeRateSnapshot.fromJson(decoded);
       }
-    } catch (error, stackTrace) {
-      debugPrint('HttpExchangeRateRepository._loadSavedSnapshot failed: $error');
-      // Log error to audit service (async, non-blocking)
+    } catch (parseError, parseStackTrace) {
       Future.microtask(() async {
         try {
           await AuditService.instance.logError(
             AuditLog(
-              accion: 'LOAD_SNAPSHOT',
-              mensaje: error.toString(),
-              codigo: error.runtimeType.toString(),
+              accion: 'LOAD_SNAPSHOT_PARSE',
+              mensaje: parseError.toString(),
+              codigo: parseError.runtimeType.toString(),
               metadatos: {
-                'stackTrace': stackTrace.toString(),
+                'rawDataLength': (maps.first['data'] as String).length,
+                'stackTrace': parseStackTrace.toString(),
               },
             ),
           );
-        } catch (auditError) {
-          debugPrint('Failed to send audit log: $auditError');
-        }
+        } catch (_) {}
       });
     }
-    return null;
+  } catch (error, stackTrace) {
+    Future.microtask(() async {
+      try {
+        await AuditService.instance.logError(
+          AuditLog(
+            accion: 'LOAD_SNAPSHOT',
+            mensaje: error.toString(),
+            codigo: error.runtimeType.toString(),
+            metadatos: {
+              'stackTrace': stackTrace.toString(),
+            },
+          ),
+        );
+      } catch (_) {}
+    });
   }
+  // Fallback a datos mock para que la UI nunca quede vacía
+  return ExchangeRateSnapshot(
+    rates: MockRates.rates,
+    updatedAt: MockRates.lastUpdated,
+    usedFallback: true,
+  );
+}
 }
 
 class _SupabaseRates {
   const _SupabaseRates({required this.entries, required this.updatedAt});
 
-  final Map<String, _SupabaseRateEntry> entries;
+  final List<_SupabaseRateEntry> entries;
   final DateTime updatedAt;
 
   _SupabaseRateEntry byCode(String code) {
-    final entry = entries[code];
+    final entry = tryByCode(code);
     if (entry == null) {
       throw FormatException('Falta la tasa $code');
     }
     return entry;
   }
 
-  _SupabaseRateEntry? tryByCode(String code) => entries[code];
+  _SupabaseRateEntry? tryByCode(String code) {
+    for (final entry in entries) {
+      if (entry.code == code) {
+        return entry;
+      }
+    }
+    return null;
+  }
+
+  _SupabaseRateEntry? tryById(String id) {
+    for (final entry in entries) {
+      if (entry.id == id) {
+        return entry;
+      }
+    }
+    return null;
+  }
 }
 
 class _SupabaseRateEntry {
   const _SupabaseRateEntry({
+    required this.id,
     required this.code,
     required this.value,
     this.name,
@@ -892,8 +943,10 @@ class _SupabaseRateEntry {
     this.displayCurrencyCode,
     this.conversionCode,
     this.sourceUpdatedAtLabel,
+    this.simbolo,
   });
 
+  final String id;
   final String code;
   final double? value;
   final String? name;
@@ -901,4 +954,7 @@ class _SupabaseRateEntry {
   final String? displayCurrencyCode;
   final String? conversionCode;
   final String? sourceUpdatedAtLabel;
+  final String? simbolo;
+
+  String? get fromCurrency => moneyType;
 }

@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 
 class AppBackground extends StatefulWidget {
@@ -20,7 +18,7 @@ class _AppBackgroundState extends State<AppBackground>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 18),
+      duration: const Duration(seconds: 45),
     )..repeat();
   }
 
@@ -72,35 +70,7 @@ class _AppBackgroundPainter extends CustomPainter {
     );
     canvas.drawRect(rect, Paint()..shader = baseGradient.createShader(rect));
 
-    _paintSoftBands(canvas, size);
     _paintFineGrid(canvas, size);
-    _paintLightSweep(canvas, size);
-  }
-
-  void _paintSoftBands(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2
-      ..color = colorScheme.primary.withValues(alpha: isDark ? .10 : .08);
-    final secondaryPaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = .8
-      ..color = const Color(0xFF1D4ED8).withValues(alpha: isDark ? .08 : .05);
-
-    for (var i = -2; i < 5; i++) {
-      final y = size.height * (.18 + i * .19);
-      final path = Path()
-        ..moveTo(-40, y)
-        ..cubicTo(
-          size.width * .25,
-          y - 34,
-          size.width * .66,
-          y + 42,
-          size.width + 40,
-          y - 12,
-        );
-      canvas.drawPath(path, i.isEven ? paint : secondaryPaint);
-    }
   }
 
   void _paintFineGrid(Canvas canvas, Size size) {
@@ -121,28 +91,6 @@ class _AppBackgroundPainter extends CustomPainter {
     }
   }
 
-  void _paintLightSweep(Canvas canvas, Size size) {
-    final sweepWidth = math.max(size.width, size.height) * .65;
-    final x = -sweepWidth + (size.width + sweepWidth * 2) * progress;
-    final rect = Rect.fromLTWH(x, 0, sweepWidth, size.height);
-    final paint = Paint()
-      ..shader = LinearGradient(
-        begin: Alignment.centerLeft,
-        end: Alignment.centerRight,
-        colors: [
-          Colors.transparent,
-          Colors.white.withValues(alpha: isDark ? .035 : .18),
-          Colors.transparent,
-        ],
-      ).createShader(rect);
-
-    canvas.save();
-    canvas.translate(size.width / 2, size.height / 2);
-    canvas.rotate(-math.pi / 12);
-    canvas.translate(-size.width / 2, -size.height / 2);
-    canvas.drawRect(rect, paint);
-    canvas.restore();
-  }
 
   @override
   bool shouldRepaint(covariant _AppBackgroundPainter oldDelegate) {

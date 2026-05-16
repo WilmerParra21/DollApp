@@ -1,16 +1,25 @@
+import 'package:dollapp/core/utils/currency_formatter.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
-import '../../../../core/utils/currency_formatter.dart';
 import '../../../../core/widgets/mini_sparkline.dart';
 import '../../../../core/widgets/trend_indicator.dart';
 import '../../models/exchange_rate.dart';
+import '../../utils/exchange_pair_quote.dart';
 
 class RateCard extends StatelessWidget {
-  const RateCard({required this.rate, required this.onTap, super.key});
+  const RateCard({
+    required this.rate,
+    required this.onTap,
+    required this.isFavorite,
+    this.onFavoriteTap,
+    super.key,
+  });
 
   final ExchangeRate rate;
+  final bool isFavorite;
   final VoidCallback onTap;
+  final VoidCallback? onFavoriteTap;
 
   @override
   Widget build(BuildContext context) {
@@ -35,6 +44,8 @@ class RateCard extends StatelessWidget {
               final header = _RateHeader(
                 rate: rate,
                 currencyColor: currencyColor,
+                isFavorite: isFavorite,
+                onFavoriteTap: onFavoriteTap,
               );
               final value = _RateValue(rate: rate);
 
@@ -101,10 +112,17 @@ class RateCard extends StatelessWidget {
 }
 
 class _RateHeader extends StatelessWidget {
-  const _RateHeader({required this.rate, required this.currencyColor});
+  const _RateHeader({
+    required this.rate,
+    required this.currencyColor,
+    required this.isFavorite,
+    this.onFavoriteTap,
+  });
 
   final ExchangeRate rate;
   final Color currencyColor;
+  final bool isFavorite;
+  final VoidCallback? onFavoriteTap;
 
   @override
   Widget build(BuildContext context) {
@@ -168,6 +186,19 @@ class _RateHeader extends StatelessWidget {
             ],
           ),
         ),
+        if (onFavoriteTap != null) ...[
+          const SizedBox(width: 12),
+          IconButton(
+            onPressed: onFavoriteTap,
+            tooltip: isFavorite ? 'Quitar favorito' : 'Marcar favorito',
+            icon: Icon(
+              isFavorite ? Icons.star_rounded : Icons.star_outline_rounded,
+              color: isFavorite
+                  ? AppColors.accentGreen
+                  : Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -187,11 +218,8 @@ class _RateValue extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
-        Text(
-          CurrencyFormatter.money(
-            rate.displayValue ?? rate.value,
-            rate.displayCurrencyCode ?? rate.code,
-          ),
+Text(
+           "${rate.moneyType ?? rate.code} ${CurrencyFormatter.formatNumber(rate.displayValue ?? rate.value)}",
           textAlign: TextAlign.end,
           style: Theme.of(
             context,
@@ -222,12 +250,21 @@ class _RateMetaInfo extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final parsed = tryParseQuote(rate);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (parsed != null) ...[
+          _RateMetaLine(
+            icon: Icons.currency_exchange_rounded,
+            text: 'Par: ${parsed.anchor}/${parsed.counter}',
+          ),
+          const SizedBox(height: 5),
+        ],
         _RateMetaLine(
           icon: Icons.payments_outlined,
-          text: 'Moneda: ${rate.displayCurrencyCode ?? rate.moneyType ?? rate.code}',
+          text: 'Moneda: ${rate.moneyType ?? rate.code}',
         ),
         if (rate.conversionCode != null) ...[
           const SizedBox(height: 5),

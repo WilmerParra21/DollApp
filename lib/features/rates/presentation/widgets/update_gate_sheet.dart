@@ -3,16 +3,13 @@ import 'package:lottie/lottie.dart';
 
 import '../../../../core/services/update_service.dart';
 
-Future<void> showUpdateGateSheet(
-  BuildContext context,
-  UpdateInfo updateInfo,
-) {
+Future<void> showUpdateGateSheet(BuildContext context, UpdateInfo updateInfo) {
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
     isDismissible: false,
     enableDrag: false,
-    backgroundColor: Theme.of(context).colorScheme.surface,
+    backgroundColor: Theme.of(context).scaffoldBackgroundColor,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
     ),
@@ -39,12 +36,14 @@ class _UpdateGateContent extends StatefulWidget {
 class _UpdateGateContentState extends State<_UpdateGateContent> {
   double _progress = 0;
   bool _isDownloading = false;
+  bool _installPermissionDenied = false;
   String? _errorMessage;
   bool _isInstalled = false;
 
   Future<void> _startDownload() async {
     setState(() {
       _errorMessage = null;
+      _installPermissionDenied = false;
       _isDownloading = true;
       _progress = 0;
     });
@@ -68,10 +67,41 @@ class _UpdateGateContentState extends State<_UpdateGateContent> {
     } catch (error) {
       if (!mounted) return;
       setState(() {
-        _errorMessage = 'No se pudo descargar o instalar la actualización. Verifica tu conexión e intenta de nuevo.';
         _isDownloading = false;
+        if (error is InstallPermissionDeniedException ||
+            error.toString().contains('REQUEST_INSTALL_PACKAGES') ||
+            error.toString().contains('Permission denied')) {
+          _installPermissionDenied = true;
+          _errorMessage =
+              'DollApp necesita permiso para instalar apps desconocidas. Abre ajustes y activa el permiso para continuar.';
+        } else {
+          _errorMessage =
+              'No se pudo descargar o instalar la actualización. Verifica tu conexión e intenta de nuevo.';
+        }
       });
     }
+  }
+
+  Future<void> _openInstallUnknownAppsSettings() async {
+    try {
+      await UpdateService.instance.openInstallUnknownAppsSettings();
+    } catch (_) {
+      // Error al abrir ajustes de instalación
+    }
+  }
+
+  Future<LottieComposition?> _dotLottieDecoder(List<int> bytes) {
+    return LottieComposition.decodeZip(
+      bytes,
+      filePicker: (files) {
+        return files.firstWhere(
+          (file) =>
+              file.name.startsWith('animations/') &&
+              file.name.endsWith('.json'),
+          orElse: () => files.first,
+        );
+      },
+    );
   }
 
   @override
@@ -99,7 +129,8 @@ class _UpdateGateContentState extends State<_UpdateGateContent> {
             ),
             const SizedBox(height: 18),
             Text(
-              '¡Tenemos mejoras para ti! Ahora DollApp es más rápido.',
+              '¡Tenemos una nueva versión de DollApp para tí!',
+              textAlign: TextAlign.center,
               style: textTheme.headlineSmall?.copyWith(
                 fontWeight: FontWeight.w900,
                 letterSpacing: -0.5,
@@ -107,7 +138,7 @@ class _UpdateGateContentState extends State<_UpdateGateContent> {
             ),
             const SizedBox(height: 12),
             Text(
-              'Instala la última versión para ver mejoras, correcciones y una experiencia más fluida.',
+              'Instala la versión (${widget.updateInfo.versionName}) para ver mejoras, correcciones y una mejor experiencia.',
               style: textTheme.bodyMedium?.copyWith(
                 color: colorScheme.onSurfaceVariant,
                 height: 1.5,
@@ -115,33 +146,54 @@ class _UpdateGateContentState extends State<_UpdateGateContent> {
             ),
             const SizedBox(height: 20),
             SizedBox(
-              height: 160,
-              child: Center(
-                child: Lottie.network(
-                  'https://assets7.lottiefiles.com/packages/lf20_op6zjz8f.json',
-                  fit: BoxFit.contain,
-                  repeat: true,
-                  frameRate: FrameRate.composition,
-                  errorBuilder: (context, error, stackTrace) {
-                    return Icon(
-                      Icons.rocket_launch_rounded,
-                      size: 82,
-                      color: colorScheme.primary,
-                    );
-                  },
-                ),
+              height: 220,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  Positioned.fill(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: RadialGradient(
+                          colors: [
+                            colorScheme.primary.withValues(alpha: 0.14),
+                            Colors.transparent,
+                          ],
+                          center: Alignment(0, -0.5),
+                          radius: 0.75,
+                        ),
+                      ),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: Lottie.asset(
+                      'assets/animation/Rocket.lottie',
+                      decoder: _dotLottieDecoder,
+                      fit: BoxFit.contain,
+                      repeat: true,
+                      frameRate: FrameRate.composition,
+                      errorBuilder: (context, error, stackTrace) {
+                        return Icon(
+                          Icons.rocket_launch_rounded,
+                          size: 100,
+                          color: colorScheme.primary,
+                        );
+                      },
+                    ),
+                  ),
+                ],
               ),
             ),
             const SizedBox(height: 12),
-            _buildInfoTile(context, 'Versión', widget.updateInfo.versionName),
-            const SizedBox(height: 12),
             Text(
               'Novedades',
-              style: textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+              style: textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w900,
+              ),
             ),
             const SizedBox(height: 10),
             Text(
-              widget.updateInfo.changelog,
+              widget.updateInfo.news,
               style: textTheme.bodyMedium?.copyWith(
                 color: colorScheme.onSurfaceVariant,
                 height: 1.45,
@@ -153,7 +205,9 @@ class _UpdateGateContentState extends State<_UpdateGateContent> {
               const SizedBox(height: 10),
               Text(
                 '${(_progress * 100).toStringAsFixed(0)} % descargado',
-                style: textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
+                style: textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
               ),
             ] else ...[
               ElevatedButton(
@@ -185,6 +239,16 @@ class _UpdateGateContentState extends State<_UpdateGateContent> {
                 ),
               ),
             ],
+            if (_installPermissionDenied) ...[
+              const SizedBox(height: 12),
+              ElevatedButton(
+                onPressed: _openInstallUnknownAppsSettings,
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 14),
+                  child: Text('Abrir ajustes de instalación'),
+                ),
+              ),
+            ],
             if (_isInstalled) ...[
               const SizedBox(height: 14),
               Text(
@@ -209,33 +273,4 @@ class _UpdateGateContentState extends State<_UpdateGateContent> {
     );
   }
 
-  Widget _buildInfoTile(BuildContext context, String label, String value) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Container(
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.25),
-        borderRadius: BorderRadius.circular(18),
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              label,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                    fontWeight: FontWeight.w700,
-                  ),
-            ),
-          ),
-          Text(
-            value,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  fontWeight: FontWeight.w900,
-                ),
-          ),
-        ],
-      ),
-    );
-  }
 }

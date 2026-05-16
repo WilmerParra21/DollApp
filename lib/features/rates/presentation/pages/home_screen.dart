@@ -32,6 +32,7 @@ class _HomeScreenState extends State<HomeScreen> {
   var _bottomRefreshDrag = 0.0;
 
   var _updateSheetShown = false;
+  var _loadFailed = false; // Track if initial load failed
 
   @override
   void initState() {
@@ -41,11 +42,17 @@ class _HomeScreenState extends State<HomeScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkForUpdateGate();
     });
-    Future(() async {
-      try {
-        await HttpExchangeRateRepository.instance.getRates(forceRefresh: true);
-      } catch (_) {}
-    });
+    // Load initial data with error handling
+    _loadInitialData().catchError((e) {});
+  }
+
+  Future<void> _loadInitialData() async {
+    try {
+      await HttpExchangeRateRepository.instance.getRates(forceRefresh: true);
+      if (mounted) setState(() => _loadFailed = false);
+    } catch (e) {
+      if (mounted) setState(() => _loadFailed = true);
+    }
   }
 
   Future<void> _checkForUpdateGate() async {
@@ -58,17 +65,16 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       _updateSheetShown = true;
       await showUpdateGateSheet(context, updateInfo);
-    } catch (error) {
-      debugPrint('HomeScreen._checkForUpdateGate failed: $error');
+    } catch (_) {
+      // Error al verificar actualización
     }
   }
 
   Future<void> _loadCachedSnapshot() async {
     try {
       await HttpExchangeRateRepository.instance.loadSavedSnapshot();
-    } catch (error) {
-      debugPrint('HomeScreen._loadCachedSnapshot failed: $error');
-      // Error is handled in repository, but we can log it here too if needed
+    } catch (_) {
+      // Error is handled in repository
     }
   }
 
@@ -87,10 +93,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     setState(() => _isRefreshing = false);
 
-    _showSnackBar(
-      context,
-      'Tasas actualizadas correctamente.',
-    );
+    _showSnackBar(context, 'Tasas actualizadas correctamente.');
   }
 
   @override
@@ -157,19 +160,45 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                           ],
                         ),
-                        ValueListenableBuilder<ExchangeRateSnapshot?>(
-                          valueListenable: _snapshotNotifier,
-                          builder: (context, snapshot, child) {
-                            if (snapshot == null) {
-                              return const _HomeSkeleton();
-                            }
+                         ValueListenableBuilder<ExchangeRateSnapshot?>(
+                           valueListenable: _snapshotNotifier,
+                           builder: (context, snapshot, child) {
+                             if (snapshot == null) {
+                               if (_loadFailed) {
+                                 return Center(
+                                   child: Padding(
+                                     padding: const EdgeInsets.all(24),
+                                     child: Column(
+                                       mainAxisSize: MainAxisSize.min,
+                                       children: [
+                                         Text(
+                                           'No se pudo cargar la tasa para cotizar. '
+                                           'Revisa tu conexion e intenta de nuevo.',
+                                           textAlign: TextAlign.center,
+                                           style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                             fontWeight: FontWeight.w600,
+                                           ),
+                                         ),
+                                         const SizedBox(height: 18),
+                                         ElevatedButton.icon(
+                                           onPressed: _loadInitialData,
+                                           icon: const Icon(Icons.refresh_rounded),
+                                           label: const Text('Reintentar'),
+                                         ),
+                                       ],
+                                     ),
+                                   ),
+                                 );
+                               }
+                               return const _HomeSkeleton();
+                             }
 
-                            return _HomeContent(
-                              ratesSnapshot: snapshot,
-                              isRefreshing: _isRefreshing,
-                            );
-                          },
-                        ),
+                             return _HomeContent(
+                               ratesSnapshot: snapshot,
+                               isRefreshing: _isRefreshing,
+                             );
+                           },
+                         ),
                       ],
                     ),
                   ),
@@ -205,6 +234,7 @@ class _HomeScreenState extends State<HomeScreen> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 }
+
 class _HomeContent extends StatelessWidget {
   const _HomeContent({required this.ratesSnapshot, required this.isRefreshing});
 
@@ -234,6 +264,25 @@ class _HomeContent extends StatelessWidget {
             padding: const EdgeInsets.only(bottom: 12),
             child: RateCard(
               rate: rate,
+              isFavorite: rate.isFavorite,
+              onFavoriteTap: () async {
+                final nextIsFavorite = !rate.isFavorite;
+                final messenger = ScaffoldMessenger.of(context);
+                await HttpExchangeRateRepository.instance.setFavorite(
+                  rate.id,
+                  nextIsFavorite,
+                );
+
+                messenger.showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      nextIsFavorite
+                          ? 'Conversión guardada como favorita.'
+                          : 'Conversión removida de favoritos.',
+                    ),
+                  ),
+                );
+              },
               onTap: () {
                 final parsed = tryParseQuote(rate);
 
@@ -241,7 +290,7 @@ class _HomeContent extends StatelessWidget {
                   context,
                   AppRoutes.calculator,
                   arguments: CalculatorRouteArgs(
-                    fixedRateCode: rate.code,
+                    fixedRateId: rate.id,
                     fromCode: parsed?.anchor,
                     toCode: parsed?.counter,
                   ),
@@ -277,22 +326,26 @@ class _HomeContent extends StatelessWidget {
   List<Widget> _quickActionChips(BuildContext context) {
     final chips = <Widget>[];
     for (final rate in ratesSnapshot.rates) {
+      final parsed = tryParseQuote(rate);
+      if (parsed == null) {
+        continue;
+      }
+
       if (chips.isNotEmpty) {
         chips.add(const SizedBox(width: 10));
       }
 
-      final isCop = rate.code == 'COP';
-  
       chips.add(
         QuickActionChip(
-          label: isCop ? 'COP a USD' : 'Bs a ${rate.code}',
-          icon: _quickActionIcon(rate.code),
+          label: '${parsed.anchor} a ${parsed.counter}',
+          icon: _quickActionIcon(parsed.counter),
           onTap: () => Navigator.pushNamed(
             context,
             AppRoutes.calculator,
             arguments: CalculatorRouteArgs(
-              fromCode: isCop ? 'COP' : 'VES',
-              toCode: isCop ? 'USD' : rate.code,
+              fixedRateId: rate.id,
+              fromCode: parsed.anchor,
+              toCode: parsed.counter,
             ),
           ),
         ),
@@ -302,11 +355,7 @@ class _HomeContent extends StatelessWidget {
   }
 
   IconData _quickActionIcon(String code) {
-    return switch (code) {
-      'USD' || 'USDT' => Icons.attach_money_rounded,
-      'EUR' => Icons.euro_rounded,
-      _ => Icons.currency_exchange_rounded,
-    };
+    return Icons.currency_exchange_rounded;
   }
 }
 
@@ -326,7 +375,7 @@ class _HomeSkeletonState extends State<_HomeSkeleton>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1250),
+      duration: const Duration(milliseconds: 650),
     )..repeat();
   }
 

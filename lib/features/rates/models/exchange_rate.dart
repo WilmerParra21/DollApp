@@ -1,5 +1,6 @@
 class ExchangeRate {
   const ExchangeRate({
+    required this.id,
     required this.code,
     required this.name,
     required this.source,
@@ -16,8 +17,10 @@ class ExchangeRate {
     this.displayValue,
     this.displayCurrencyCode,
     this.conversionCode,
+    this.isFavorite = false,
   });
 
+  final String id;
   final String code;
   final String name;
   final String source;
@@ -34,17 +37,21 @@ class ExchangeRate {
   final double? displayValue;
   final String? displayCurrencyCode;
   final String? conversionCode;
+  final bool isFavorite;
 
   bool get isUp => changePercent >= 0;
   bool get hasTrend => sparklineValues.length >= 2 && changePercent.abs() > 0.01;
 
   ExchangeRate copyWith({
+    String? id,
     double? changePercent,
     List<double>? sparklineValues,
     List<ExchangeRateHistoryPoint>? historyPoints,
     bool? keptPreviousValue,
+    bool? isFavorite,
   }) {
     return ExchangeRate(
+      id: id ?? this.id,
       code: code,
       name: name,
       source: source,
@@ -61,11 +68,13 @@ class ExchangeRate {
       displayValue: displayValue,
       displayCurrencyCode: displayCurrencyCode,
       conversionCode: conversionCode,
+      isFavorite: isFavorite ?? this.isFavorite,
     );
   }
 
   Map<String, dynamic> toJson() {
     return {
+      'id': id,
       'code': code,
       'name': name,
       'source': source,
@@ -82,11 +91,14 @@ class ExchangeRate {
       'displayValue': displayValue,
       'displayCurrencyCode': displayCurrencyCode,
       'conversionCode': conversionCode,
+      'isFavorite': isFavorite,
     };
   }
 
   factory ExchangeRate.fromJson(Map<String, dynamic> json) {
+    final id = json['id'] as String? ?? json['code'] as String? ?? '';
     return ExchangeRate(
+      id: id,
       code: json['code'] as String,
       name: json['name'] as String,
       source: json['source'] as String,
@@ -111,6 +123,7 @@ class ExchangeRate {
       displayValue: (json['displayValue'] as num?)?.toDouble(),
       displayCurrencyCode: json['displayCurrencyCode'] as String?,
       conversionCode: json['conversionCode'] as String?,
+      isFavorite: json['isFavorite'] as bool? ?? false,
     );
   }
 }

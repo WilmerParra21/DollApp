@@ -1,17 +1,22 @@
 class CurrencyFormatter {
   const CurrencyFormatter._();
 
-  static String bolivar(double value) => 'Bs. ${_formatNumber(value)}';
+  static String bolivar(double value) => 'Bs. ${formatNumber(value)}';
 
   static String money(double value, String code) {
     final normalizedCode = code.toUpperCase();
     return switch (normalizedCode) {
       'VES' || 'Bs' || 'BS.' => bolivar(value),
-      'USD' || 'usd' => '\$ ${_formatNumber(value)}',
-      'EUR' || 'eur' => '€ ${_formatNumber(value)}',
-      'COP' || 'cop' => 'COP ${_formatNumber(value)}',
-      _ => '$normalizedCode ${_formatNumber(value)}',
+      'USD' || 'usd' => '\$ ${formatNumber(value)}',
+      'EUR' || 'eur' => '€ ${formatNumber(value)}',
+      'COP' || 'cop' => 'COP ${formatNumber(value)}',
+      _ => '$normalizedCode ${formatNumber(value)}',
     };
+  }
+
+  static String moneyWithCode(double value, String code) {
+    final normalizedCode = code.toUpperCase();
+    return '$normalizedCode ${formatNumber(value)}';
   }
 
   /// Cotizaciones muy pequeñas (reciprocas) para no ver `0,00` con sólo dos decimales.
@@ -21,17 +26,17 @@ class CurrencyFormatter {
 
     return switch (normalizedCode) {
       'VES' || 'Bs' || 'BS.' => bolivarScaled(value, decimals),
-      'USD' || 'usd' => '\$ ${_formatNumber(value, decimals)}',
-      'EUR' || 'eur' => '€ ${_formatNumber(value, decimals)}',
-      'COP' || 'cop' => 'COP ${_formatNumber(value, decimals)}',
-      _ => '$normalizedCode ${_formatNumber(value, decimals)}',
+      'USD' || 'usd' => '\$ ${formatNumber(value, decimals)}',
+      'EUR' || 'eur' => '€ ${formatNumber(value, decimals)}',
+      'COP' || 'cop' => 'COP ${formatNumber(value, decimals)}',
+      _ => '$normalizedCode ${formatNumber(value, decimals)}',
     };
   }
 
   static String bolivarScaled(double value, int decimals) =>
-      'Bs. ${_formatNumber(value, decimals)}';
+      'Bs. ${formatNumber(value, decimals)}';
 
-  static String decimal(double value) => _formatNumber(value);
+  static String decimal(double value) => formatNumber(value);
 
   static String percent(double value) {
     final sign = value >= 0 ? '+' : '';
@@ -46,7 +51,7 @@ class CurrencyFormatter {
     return 6;
   }
 
-  static String _formatNumber(double value, [int decimals = 2]) {
+  static String formatNumber(double value, [int decimals = 2]) {
     final fixed = value.toStringAsFixed(decimals);
     final parts = fixed.split('.');
     final integer = parts.first;

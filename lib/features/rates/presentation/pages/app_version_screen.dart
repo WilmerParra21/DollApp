@@ -79,11 +79,11 @@ class AppVersionScreen extends StatelessWidget {
                     const SizedBox(height: 12),
                     VersionInfoCard(
                       children: const [
-                        _InfoRow(label: 'Versión', value: '1.0.2'),
-                        _InfoRow(label: 'Estado', value: 'Alpha v1'),
+                        _InfoRow(label: 'Versión', value: '1.0.3'),
+                        _InfoRow(label: 'Estado', value: 'Alpha v3'),
                         _InfoRow(
                           label: 'Última actualización',
-                          value: '10/05/2026',
+                          value: '16/05/2026',
                         ),
                       ],
                     ),
@@ -122,7 +122,7 @@ class AppVersionScreen extends StatelessWidget {
 
                         const _FeatureTile(
                           icon: Icons.account_balance_rounded,
-                          text: 'Binance',
+                          text: 'Tasa de Cambio Internacional',
                         ),
 
                         const _FeatureTile(
@@ -169,7 +169,7 @@ class AppVersionScreen extends StatelessWidget {
                         const SizedBox(height: 12),
                         const _FeatureTile(
                           icon: Icons.trending_up_rounded,
-                          text: 'Consulta de tasas BCV, EUR, USDT y COP',
+                          text: 'Consulta de tasas BCV, EUR, CYN y COP',
                         ),
                       
                         const _FeatureTile(

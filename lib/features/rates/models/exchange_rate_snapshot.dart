@@ -24,6 +24,15 @@ class ExchangeRateSnapshot {
     return null;
   }
 
+  ExchangeRate? tryById(String id) {
+    for (final rate in rates) {
+      if (rate.id == id) {
+        return rate;
+      }
+    }
+    return null;
+  }
+
   ExchangeRateSnapshot copyWith({
     List<ExchangeRate>? rates,
     DateTime? updatedAt,
