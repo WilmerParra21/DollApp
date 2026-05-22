@@ -169,7 +169,7 @@ class AppVersionScreen extends StatelessWidget {
                         const SizedBox(height: 12),
                         const _FeatureTile(
                           icon: Icons.trending_up_rounded,
-                          text: 'Consulta de tasas BCV, EUR, CYN y COP',
+                          text: 'Consulta de tasas BCV, EUR, CNY y COP',
                         ),
                       
                         const _FeatureTile(
