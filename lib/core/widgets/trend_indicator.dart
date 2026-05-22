@@ -21,7 +21,7 @@ class TrendIndicator extends StatelessWidget {
 
     return Container(
       padding: EdgeInsets.symmetric(
-        horizontal: compact ? 8 : 10,
+        horizontal: compact ? 22 : 24,
         vertical: compact ? 5 : 7,
       ),
       decoration: BoxDecoration(
@@ -34,14 +34,14 @@ class TrendIndicator extends StatelessWidget {
           Icon(
             isUp ? Icons.trending_up_rounded : Icons.trending_down_rounded,
             color: color,
-            size: compact ? 15 : 17,
+            size: compact ? 24 : 24,
           ),
           const SizedBox(width: 4),
           Text(
             CurrencyFormatter.percent(changePercent),
             style: TextStyle(
               color: color,
-              fontSize: compact ? 12 : 13,
+              fontSize: compact ? 14 : 14,
               fontWeight: FontWeight.w800,
             ),
           ),

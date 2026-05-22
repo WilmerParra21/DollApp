@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter/services.dart';
 import 'package:open_file/open_file.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
@@ -132,6 +133,86 @@ class UpdateService {
         throw InstallPermissionDeniedException(message);
       }
       rethrow;
+    }
+  }
+
+  bool get hasPlayStoreLink {
+    return AppConfig.hasPlayStoreConfig;
+  }
+
+  Future<void> openPlayStore() async {
+    if (!Platform.isAndroid || !hasPlayStoreLink) return;
+
+    final packageInfo = await PackageInfo.fromPlatform();
+    final packageName = AppConfig.playStorePackageName.isNotEmpty
+        ? AppConfig.playStorePackageName
+        : packageInfo.packageName;
+
+    final storeUrl = AppConfig.playStoreUrl.isNotEmpty
+        ? AppConfig.playStoreUrl
+        : 'https://play.google.com/store/apps/details?id=$packageName';
+
+    final marketUri = 'market://details?id=$packageName';
+
+    try {
+      final intent = AndroidIntent(action: 'action_view', data: marketUri);
+      await intent.launch();
+    } catch (error, stackTrace) {
+      await _logAudit(
+        accion: 'UPDATE_OPEN_PLAY_STORE_FAILED',
+        mensaje: error.toString(),
+        codigo: error.runtimeType.toString(),
+        metadatos: {
+          'packageName': packageName,
+          'storeUrl': storeUrl,
+          'stackTrace': stackTrace.toString(),
+        },
+      );
+      final fallbackIntent = AndroidIntent(
+        action: 'action_view',
+        data: storeUrl,
+      );
+      await fallbackIntent.launch();
+    }
+  }
+
+  Future<bool> isPlayStoreAvailable() async {
+    if (!Platform.isAndroid ||
+        !hasPlayStoreLink ||
+        AppConfig.playStoreUrl.isEmpty) {
+      return false;
+    }
+
+    try {
+      final response = await _dio.get(
+        AppConfig.playStoreUrl,
+        options: Options(
+          followRedirects: true,
+          validateStatus: (status) => status != null && status < 500,
+          headers: {
+            'User-Agent':
+                'Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Mobile Safari/537.36',
+          },
+        ),
+      );
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> canInstallFromUnknownSources() async {
+    if (!Platform.isAndroid) {
+      return true;
+    }
+
+    try {
+      final result = await const MethodChannel(
+        'com.devsparra.dollapp/update_service',
+      ).invokeMethod<bool>('canRequestPackageInstalls');
+      return result == true;
+    } on PlatformException {
+      return true;
     }
   }
 

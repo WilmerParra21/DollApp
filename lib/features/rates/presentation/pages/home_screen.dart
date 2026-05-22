@@ -1,11 +1,12 @@
+import 'package:dollapp/core/models/audit_log.dart';
+import 'package:dollapp/core/services/audit_service.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../app/app_routes.dart';
 import '../../../../core/services/update_service.dart';
 import '../../../../core/widgets/app_background.dart';
-import '../../../../core/widgets/app_primary_button.dart';
-import '../../../../core/widgets/quick_action_chip.dart';
 import '../../data/http_exchange_rate_repository.dart';
+import '../../data/pinned_conversion_store.dart';
 import '../../models/exchange_rate_snapshot.dart';
 import '../../utils/exchange_pair_quote.dart';
 import '../widgets/rate_card.dart';
@@ -16,11 +17,13 @@ class HomeScreen extends StatefulWidget {
   const HomeScreen({
     required this.themeMode,
     required this.onToggleTheme,
+    required this.skipPinnedRedirect,
     super.key,
   });
 
   final ThemeMode themeMode;
   final VoidCallback onToggleTheme;
+  final bool skipPinnedRedirect;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -33,11 +36,18 @@ class _HomeScreenState extends State<HomeScreen> {
 
   var _updateSheetShown = false;
   var _loadFailed = false; // Track if initial load failed
+  var _offlineWithoutData = false;
+  var _redirectedToPinnedCalculator = false;
+  var _pinnedRedirectCheckCompleted = false;
 
   @override
   void initState() {
     super.initState();
     _snapshotNotifier = HttpExchangeRateRepository.instance.snapshotNotifier;
+    _snapshotNotifier.addListener(_tryRedirectToPinnedCalculator);
+    if (widget.skipPinnedRedirect) {
+      _pinnedRedirectCheckCompleted = true;
+    }
     _loadCachedSnapshot();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkForUpdateGate();
@@ -49,9 +59,30 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _loadInitialData() async {
     try {
       await HttpExchangeRateRepository.instance.getRates(forceRefresh: true);
-      if (mounted) setState(() => _loadFailed = false);
+      if (mounted) {
+        setState(() {
+          _loadFailed = false;
+          _offlineWithoutData = false;
+        });
+      }
     } catch (e) {
-      if (mounted) setState(() => _loadFailed = true);
+      Future.microtask(() async {
+        try {
+          await AuditService.instance.logError(
+            AuditLog(
+              accion: 'HOME_LOAD_INITIAL_DATA_FAILED',
+              mensaje: e.toString(),
+              codigo: e.runtimeType.toString(),
+              metadatos: {'stage': 'load_initial_data'},
+            ),
+          );
+        } catch (_) {}
+      });
+      if (!mounted) return;
+      setState(() {
+        _loadFailed = true;
+        _offlineWithoutData = e is NetworkUnavailableException;
+      });
     }
   }
 
@@ -65,17 +96,144 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       _updateSheetShown = true;
       await showUpdateGateSheet(context, updateInfo);
-    } catch (_) {
+    } catch (error) {
+      Future.microtask(() async {
+        try {
+          await AuditService.instance.logError(
+            AuditLog(
+              accion: 'HOME_CHECK_UPDATE_GATE_FAILED',
+              mensaje: error.toString(),
+              codigo: error.runtimeType.toString(),
+              metadatos: {'stage': 'check_update_gate'},
+            ),
+          );
+        } catch (_) {}
+      });
       // Error al verificar actualización
     }
+  }
+
+  @override
+  void dispose() {
+    _snapshotNotifier.removeListener(_tryRedirectToPinnedCalculator);
+    super.dispose();
   }
 
   Future<void> _loadCachedSnapshot() async {
     try {
       await HttpExchangeRateRepository.instance.loadSavedSnapshot();
-    } catch (_) {
+    } catch (error) {
+      Future.microtask(() async {
+        try {
+          await AuditService.instance.logError(
+            AuditLog(
+              accion: 'HOME_LOAD_CACHED_SNAPSHOT_FAILED',
+              mensaje: error.toString(),
+              codigo: error.runtimeType.toString(),
+              metadatos: {'stage': 'load_cached_snapshot'},
+            ),
+          );
+        } catch (_) {}
+      });
       // Error is handled in repository
     }
+    await _tryRedirectToPinnedCalculator();
+  }
+
+  Future<void> _tryRedirectToPinnedCalculator() async {
+    if (_redirectedToPinnedCalculator || widget.skipPinnedRedirect || !mounted) {
+      return;
+    }
+
+    final snapshot = _snapshotNotifier.value;
+    if (snapshot == null) return;
+
+    final pinned = await PinnedConversionStore.loadPinnedConversion();
+    if (pinned.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _pinnedRedirectCheckCompleted = true;
+        });
+      }
+      return;
+    }
+
+    final routeArgs = _routeArgsForPinnedConversion(snapshot, pinned);
+    if (routeArgs == null) {
+      if (mounted) {
+        setState(() {
+          _pinnedRedirectCheckCompleted = true;
+        });
+      }
+      return;
+    }
+
+    _redirectedToPinnedCalculator = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Navigator.pushReplacementNamed(
+        context,
+        AppRoutes.calculator,
+        arguments: CalculatorRouteArgs(
+          fixedRateId: routeArgs.fixedRateId,
+          fixedRateCode: routeArgs.fixedRateCode,
+          fromCode: routeArgs.fromCode,
+          toCode: routeArgs.toCode,
+          closeAppOnBack: true,
+        ),
+      );
+    });
+  }
+
+  CalculatorRouteArgs? _routeArgsForPinnedConversion(
+    ExchangeRateSnapshot snapshot,
+    PinnedConversion pinned,
+  ) {
+    final rateId = pinned.rateId?.trim();
+    if (rateId != null && rateId.isNotEmpty) {
+      final rate = snapshot.tryById(rateId);
+      if (rate != null) {
+        final parsed = tryParseQuote(rate);
+        if (parsed != null) {
+          return CalculatorRouteArgs(
+            fixedRateId: rate.id,
+            fixedRateCode: rate.code,
+            fromCode: parsed.anchor,
+            toCode: parsed.counter,
+          );
+        }
+      }
+    }
+
+    final rateCode = pinned.rateCode?.trim();
+    if (rateCode != null && rateCode.isNotEmpty) {
+      final rate = snapshot.tryByCode(rateCode);
+      if (rate != null && rate.isFavorite) {
+        final parsed = tryParseQuote(rate);
+        if (parsed != null) {
+          return CalculatorRouteArgs(
+            fixedRateId: rate.id,
+            fixedRateCode: rate.code,
+            fromCode: parsed.anchor,
+            toCode: parsed.counter,
+          );
+        }
+      }
+    }
+
+    final fromCode = pinned.fromCode?.trim();
+    final toCode = pinned.toCode?.trim();
+    if (fromCode != null &&
+        toCode != null &&
+        fromCode.isNotEmpty &&
+        toCode.isNotEmpty) {
+      final quote = findQuoteForCurrencyPair(snapshot, fromCode, toCode);
+      if (quote?.row.isFavorite == true) {
+        return CalculatorRouteArgs(fromCode: fromCode, toCode: toCode);
+      }
+    }
+
+    return null;
   }
 
   Future<void> _refreshRates() async {
@@ -86,6 +244,18 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       await HttpExchangeRateRepository.instance.getRates(forceRefresh: true);
     } catch (error) {
+      Future.microtask(() async {
+        try {
+          await AuditService.instance.logError(
+            AuditLog(
+              accion: 'HOME_REFRESH_RATES_FAILED',
+              mensaje: error.toString(),
+              codigo: error.runtimeType.toString(),
+              metadatos: {'stage': 'refresh_rates'},
+            ),
+          );
+        } catch (_) {}
+      });
       // Error handled in repository
     }
 
@@ -100,6 +270,13 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    if (!_pinnedRedirectCheckCompleted) {
+      return Scaffold(
+        backgroundColor: colorScheme.surface,
+        body: SafeArea(child: AppBackground(child: const _HomeSkeleton())),
+      );
+    }
 
     return Scaffold(
       backgroundColor: colorScheme.surface,
@@ -160,45 +337,27 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                           ],
                         ),
-                         ValueListenableBuilder<ExchangeRateSnapshot?>(
-                           valueListenable: _snapshotNotifier,
-                           builder: (context, snapshot, child) {
-                             if (snapshot == null) {
-                               if (_loadFailed) {
-                                 return Center(
-                                   child: Padding(
-                                     padding: const EdgeInsets.all(24),
-                                     child: Column(
-                                       mainAxisSize: MainAxisSize.min,
-                                       children: [
-                                         Text(
-                                           'No se pudo cargar la tasa para cotizar. '
-                                           'Revisa tu conexion e intenta de nuevo.',
-                                           textAlign: TextAlign.center,
-                                           style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                                             fontWeight: FontWeight.w600,
-                                           ),
-                                         ),
-                                         const SizedBox(height: 18),
-                                         ElevatedButton.icon(
-                                           onPressed: _loadInitialData,
-                                           icon: const Icon(Icons.refresh_rounded),
-                                           label: const Text('Reintentar'),
-                                         ),
-                                       ],
-                                     ),
-                                   ),
-                                 );
-                               }
-                               return const _HomeSkeleton();
-                             }
+                        ValueListenableBuilder<ExchangeRateSnapshot?>(
+                          valueListenable: _snapshotNotifier,
+                          builder: (context, snapshot, child) {
+                            if (snapshot == null) {
+                              if (_loadFailed) {
+                                return _HomeConnectionProblem(
+                                  onRetry: _loadInitialData,
+                                  showOfflineMessage: _offlineWithoutData,
+                                );
+                              }
+                              return const _HomeSkeleton();
+                            }
 
-                             return _HomeContent(
-                               ratesSnapshot: snapshot,
-                               isRefreshing: _isRefreshing,
-                             );
-                           },
-                         ),
+                            return _HomeContent(
+                              ratesSnapshot: snapshot,
+                              isRefreshing: _isRefreshing,
+                              showOfflineWarning:
+                                  _loadFailed && snapshot.usedFallback,
+                            );
+                          },
+                        ),
                       ],
                     ),
                   ),
@@ -236,10 +395,15 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 class _HomeContent extends StatelessWidget {
-  const _HomeContent({required this.ratesSnapshot, required this.isRefreshing});
+  const _HomeContent({
+    required this.ratesSnapshot,
+    required this.isRefreshing,
+    required this.showOfflineWarning,
+  });
 
   final ExchangeRateSnapshot ratesSnapshot;
   final bool isRefreshing;
+  final bool showOfflineWarning;
 
   @override
   Widget build(BuildContext context) {
@@ -247,6 +411,27 @@ class _HomeContent extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 22),
+        if (showOfflineWarning) ...[
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: const [
+                  Text(
+                    'Sin conexión a internet',
+                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    'Estás viendo datos guardados. Conéctate a internet para obtener las tasas reales y actualizar la información.',
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 18),
+        ],
         UpdateStatusCard(
           isOffline: ratesSnapshot.usedFallback,
           updatedAt: ratesSnapshot.updatedAt,
@@ -259,14 +444,28 @@ class _HomeContent extends StatelessWidget {
           ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
         ),
         const SizedBox(height: 12),
-        ...ratesSnapshot.rates.map(
-          (rate) => Padding(
+        ...ratesSnapshot.rates.map((rate) {
+          final favoriteCount = ratesSnapshot.rates
+              .where((item) => item.isFavorite)
+              .length;
+          return Padding(
             padding: const EdgeInsets.only(bottom: 12),
             child: RateCard(
               rate: rate,
               isFavorite: rate.isFavorite,
               onFavoriteTap: () async {
                 final nextIsFavorite = !rate.isFavorite;
+                if (nextIsFavorite && favoriteCount >= 2 && !rate.isFavorite) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        'Solo puedes tener 2 conversiones en favoritos.',
+                      ),
+                    ),
+                  );
+                  return;
+                }
+
                 final messenger = ScaffoldMessenger.of(context);
                 await HttpExchangeRateRepository.instance.setFavorite(
                   rate.id,
@@ -297,65 +496,70 @@ class _HomeContent extends StatelessWidget {
                 );
               },
             ),
-          ),
-        ),
-        const SizedBox(height: 10),
+          );
+        }),
+        /*    const SizedBox(height: 10),
         AppPrimaryButton(
           label: 'Calcular',
           icon: Icons.calculate_rounded,
           onPressed: () => Navigator.pushNamed(context, AppRoutes.calculator),
         ),
-        const SizedBox(height: 28),
-        Text(
-          'Conversion rapida',
-          style: Theme.of(
-            context,
-          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
-        ),
-        const SizedBox(height: 10),
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Row(children: _quickActionChips(context)),
-        ),
+    */
         const SizedBox(height: 14),
         _BottomRefreshHint(isRefreshing: isRefreshing),
       ],
     );
   }
+}
 
-  List<Widget> _quickActionChips(BuildContext context) {
-    final chips = <Widget>[];
-    for (final rate in ratesSnapshot.rates) {
-      final parsed = tryParseQuote(rate);
-      if (parsed == null) {
-        continue;
-      }
+class _HomeConnectionProblem extends StatelessWidget {
+  const _HomeConnectionProblem({
+    required this.onRetry,
+    required this.showOfflineMessage,
+  });
 
-      if (chips.isNotEmpty) {
-        chips.add(const SizedBox(width: 10));
-      }
+  final VoidCallback onRetry;
+  final bool showOfflineMessage;
 
-      chips.add(
-        QuickActionChip(
-          label: '${parsed.anchor} a ${parsed.counter}',
-          icon: _quickActionIcon(parsed.counter),
-          onTap: () => Navigator.pushNamed(
-            context,
-            AppRoutes.calculator,
-            arguments: CalculatorRouteArgs(
-              fixedRateId: rate.id,
-              fromCode: parsed.anchor,
-              toCode: parsed.counter,
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.cloud_off_rounded, size: 58),
+            const SizedBox(height: 20),
+            Text(
+              showOfflineMessage
+                  ? 'No hay conexión a internet y no tenemos datos guardados.'
+                  : 'No se pudieron cargar las tasas.',
+              textAlign: TextAlign.center,
+              style: Theme.of(
+                context,
+              ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800),
             ),
-          ),
+            const SizedBox(height: 12),
+            Text(
+              showOfflineMessage
+                  ? 'Conecta tu dispositivo a internet para descargar las tasas reales y volver a usar DollApp sin límite.'
+                  : 'Revisa tu conexión y vuelve a intentarlo para cargar la lista de tasas.',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 22),
+            ElevatedButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Reintentar'),
+            ),
+          ],
         ),
-      );
-    }
-    return chips;
-  }
-
-  IconData _quickActionIcon(String code) {
-    return Icons.currency_exchange_rounded;
+      ),
+    );
   }
 }
 

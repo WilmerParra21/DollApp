@@ -39,7 +39,7 @@ class CurrencyFormatter {
   static String decimal(double value) => formatNumber(value);
 
   static String percent(double value) {
-    final sign = value >= 0 ? '+' : '';
+    final sign = value > 0 ? '+' : '';
     return '$sign${value.toStringAsFixed(2)}%';
   }
 

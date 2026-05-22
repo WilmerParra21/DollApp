@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../../../core/constants/app_colors.dart';
-import '../../../../core/widgets/mini_sparkline.dart';
 import '../../../../core/widgets/trend_indicator.dart';
 import '../../models/exchange_rate.dart';
 
@@ -12,8 +10,7 @@ class RateTrendCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = rate.isUp ? AppColors.positiveGreen : AppColors.negativeRed;
-    final colorScheme = Theme.of(context).colorScheme;
+     final colorScheme = Theme.of(context).colorScheme;
 
     if (!rate.hasTrend) {
       return Container(
@@ -34,14 +31,7 @@ class RateTrendCard extends StatelessWidget {
 
     return Row(
       children: [
-        Expanded(
-          child: MiniSparkline(
-            values: rate.sparklineValues,
-            color: color,
-            height: 36,
-          ),
-        ),
-        const SizedBox(width: 12),
+ 
         TrendIndicator(changePercent: rate.changePercent, isUp: rate.isUp),
       ],
     );

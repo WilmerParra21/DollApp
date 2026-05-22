@@ -1,3 +1,5 @@
+import 'package:dollapp/core/models/audit_log.dart';
+import 'package:dollapp/core/services/audit_service.dart';
 import 'package:flutter/material.dart';
 import 'package:lottie/lottie.dart';
 
@@ -39,6 +41,32 @@ class _UpdateGateContentState extends State<_UpdateGateContent> {
   bool _installPermissionDenied = false;
   String? _errorMessage;
   bool _isInstalled = false;
+  bool _playStoreAvailable = false;
+  bool _playStoreChecked = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolvePlayStoreAvailability();
+  }
+
+  Future<void> _resolvePlayStoreAvailability() async {
+    if (!UpdateService.instance.hasPlayStoreLink) {
+      setState(() {
+        _playStoreChecked = true;
+        _playStoreAvailable = false;
+      });
+      return;
+    }
+
+    final available = await UpdateService.instance.isPlayStoreAvailable();
+    if (!mounted) return;
+
+    setState(() {
+      _playStoreChecked = true;
+      _playStoreAvailable = available;
+    });
+  }
 
   Future<void> _startDownload() async {
     setState(() {
@@ -65,6 +93,21 @@ class _UpdateGateContentState extends State<_UpdateGateContent> {
         _isInstalled = true;
       });
     } catch (error) {
+      Future.microtask(() async {
+        try {
+          await AuditService.instance.logError(
+            AuditLog(
+              accion: 'UPDATE_GATE_DOWNLOAD_FAILED',
+              mensaje: error.toString(),
+              codigo: error.runtimeType.toString(),
+              metadatos: {
+                'stage': 'start_download',
+                'downloadUrl': widget.updateInfo.downloadUrl,
+              },
+            ),
+          );
+        } catch (_) {}
+      });
       if (!mounted) return;
       setState(() {
         _isDownloading = false;
@@ -82,10 +125,71 @@ class _UpdateGateContentState extends State<_UpdateGateContent> {
     }
   }
 
+  Future<void> _openPlayStore() async {
+    try {
+      await UpdateService.instance.openPlayStore();
+    } catch (error) {
+      Future.microtask(() async {
+        try {
+          await AuditService.instance.logError(
+            AuditLog(
+              accion: 'UPDATE_GATE_OPEN_PLAY_STORE_FAILED',
+              mensaje: error.toString(),
+              codigo: error.runtimeType.toString(),
+              metadatos: {'stage': 'open_play_store'},
+            ),
+          );
+        } catch (_) {}
+      });
+      if (!mounted) return;
+      setState(() {
+        _errorMessage =
+            'No se pudo abrir Play Store. Intenta nuevamente más tarde.';
+      });
+    }
+  }
+
+  Future<void> _startUpdate() async {
+    if (UpdateService.instance.hasPlayStoreLink && !_playStoreChecked) {
+      await _resolvePlayStoreAvailability();
+    }
+
+    if (_playStoreAvailable) {
+      await _openPlayStore();
+      return;
+    }
+
+    final canInstall = await UpdateService.instance
+        .canInstallFromUnknownSources();
+    if (!canInstall) {
+      if (!mounted) return;
+      setState(() {
+        _installPermissionDenied = true;
+        _errorMessage =
+            'DollApp necesita permiso para instalar apps desconocidas antes de descargar la actualización.';
+      });
+      return;
+    }
+
+    await _startDownload();
+  }
+
   Future<void> _openInstallUnknownAppsSettings() async {
     try {
       await UpdateService.instance.openInstallUnknownAppsSettings();
-    } catch (_) {
+    } catch (error) {
+      Future.microtask(() async {
+        try {
+          await AuditService.instance.logError(
+            AuditLog(
+              accion: 'UPDATE_GATE_OPEN_SETTINGS_FAILED',
+              mensaje: error.toString(),
+              codigo: error.runtimeType.toString(),
+              metadatos: {'stage': 'open_install_unknown_apps_settings'},
+            ),
+          );
+        } catch (_) {}
+      });
       // Error al abrir ajustes de instalación
     }
   }
@@ -211,10 +315,21 @@ class _UpdateGateContentState extends State<_UpdateGateContent> {
               ),
             ] else ...[
               ElevatedButton(
-                onPressed: _startDownload,
-                child: const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 14),
-                  child: Text('Actualizar ahora'),
+                onPressed:
+                    (_playStoreChecked ||
+                        !UpdateService.instance.hasPlayStoreLink)
+                    ? _startUpdate
+                    : null,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  child: Text(
+                    !_playStoreChecked &&
+                            UpdateService.instance.hasPlayStoreLink
+                        ? 'Verificando Play Store...'
+                        : _playStoreAvailable
+                        ? 'Abrir Play Store'
+                        : 'Actualizar ahora',
+                  ),
                 ),
               ),
               if (!widget.updateInfo.isMandatory) ...[
@@ -272,5 +387,4 @@ class _UpdateGateContentState extends State<_UpdateGateContent> {
       ),
     );
   }
-
 }

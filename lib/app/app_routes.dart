@@ -32,9 +32,18 @@ class AppRoutes {
           initialToCode: settings.arguments is CalculatorRouteArgs
               ? (settings.arguments! as CalculatorRouteArgs).toCode
               : null,
+          closeAppOnBack: settings.arguments is CalculatorRouteArgs
+              ? (settings.arguments! as CalculatorRouteArgs).closeAppOnBack
+              : false,
         ),
         about => const AppVersionScreen(),
-        _ => HomeScreen(themeMode: themeMode, onToggleTheme: onToggleTheme),
+        _ => HomeScreen(
+          themeMode: themeMode,
+          onToggleTheme: onToggleTheme,
+          skipPinnedRedirect: settings.arguments is HomeRouteArgs
+              ? (settings.arguments! as HomeRouteArgs).skipPinnedRedirect
+              : false,
+        ),
       },
     );
   }
@@ -46,10 +55,18 @@ class CalculatorRouteArgs {
     this.fixedRateCode,
     this.fromCode,
     this.toCode,
+    this.closeAppOnBack = false,
   });
 
   final String? fixedRateId;
   final String? fixedRateCode;
   final String? fromCode;
   final String? toCode;
+  final bool closeAppOnBack;
+}
+
+class HomeRouteArgs {
+  const HomeRouteArgs({this.skipPinnedRedirect = false});
+
+  final bool skipPinnedRedirect;
 }

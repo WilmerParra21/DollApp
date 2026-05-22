@@ -2,7 +2,6 @@ import 'package:dollapp/core/utils/currency_formatter.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
-import '../../../../core/widgets/mini_sparkline.dart';
 import '../../../../core/widgets/trend_indicator.dart';
 import '../../models/exchange_rate.dart';
 import '../../utils/exchange_pair_quote.dart';
@@ -54,7 +53,7 @@ class RateCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     header,
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 8),
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -126,7 +125,6 @@ class _RateHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
 
     return Row(
       children: [
@@ -161,20 +159,10 @@ class _RateHeader extends StatelessWidget {
                   context,
                 ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
               ),
-              const SizedBox(height: 2),
-              Text(
-                rate.source,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
               if (rate.keptPreviousValue) ...[
                 const SizedBox(height: 8),
                 Text(
-                  'La API devolvió 0,00. Se muestra la última actualización conocida.',
+                  'Se muestra la última actualización conocida.',
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -211,31 +199,28 @@ class _RateValue extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final trendColor = rate.isUp
-        ? AppColors.positiveGreen
-        : AppColors.negativeRed;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
-Text(
-           "${rate.moneyType ?? rate.code} ${CurrencyFormatter.formatNumber(rate.displayValue ?? rate.value)}",
+        Text(
+          "${rate.moneyType ?? rate.code} ${CurrencyFormatter.formatNumber(rate.displayValue ?? rate.value)}",
           textAlign: TextAlign.end,
           style: Theme.of(
             context,
-          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+          ).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w900,
+              ),
         ),
         if (rate.hasTrend) ...[
-          const SizedBox(height: 4),
-          MiniSparkline(values: rate.sparklineValues, color: trendColor),
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
           TrendIndicator(
             changePercent: rate.changePercent,
             isUp: rate.isUp,
             compact: true,
           ),
         ] else ...[
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
           const _TrendUnavailableBadge(),
         ],
       ],
@@ -266,13 +251,7 @@ class _RateMetaInfo extends StatelessWidget {
           icon: Icons.payments_outlined,
           text: 'Moneda: ${rate.moneyType ?? rate.code}',
         ),
-        if (rate.conversionCode != null) ...[
-          const SizedBox(height: 5),
-          _RateMetaLine(
-            icon: Icons.sync_alt_rounded,
-            text: 'Convierte: ${rate.conversionCode}',
-          ),
-        ],
+      
         if (rate.sourceUpdatedAtLabel != null) ...[
           const SizedBox(height: 5),
           _RateMetaLine(

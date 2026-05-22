@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/utils/currency_formatter.dart';
-import '../../../../core/widgets/mini_sparkline.dart';
 import '../../../../core/widgets/trend_indicator.dart';
 import '../../models/exchange_rate.dart';
 
@@ -123,8 +122,7 @@ class _HistoryTrend extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final color = rate.isUp ? AppColors.positiveGreen : AppColors.negativeRed;
-
+  
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -137,14 +135,7 @@ class _HistoryTrend extends StatelessWidget {
         const SizedBox(height: 10),
         Row(
           children: [
-            Expanded(
-              child: MiniSparkline(
-                values: rate.sparklineValues,
-                color: color,
-                height: 34,
-              ),
-            ),
-            const SizedBox(width: 12),
+       
             TrendIndicator(
               changePercent: rate.changePercent,
               isUp: rate.isUp,

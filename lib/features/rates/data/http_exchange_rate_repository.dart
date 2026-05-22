@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dollapp/core/config/app_config.dart';
 import 'package:dollapp/core/models/audit_log.dart';
@@ -14,6 +16,13 @@ import '../models/exchange_rate.dart';
 import '../models/exchange_rate_snapshot.dart';
 import 'exchange_rate_repository.dart';
 import 'mock_rates.dart';
+
+class NetworkUnavailableException implements Exception {
+  const NetworkUnavailableException();
+
+  @override
+  String toString() => 'No Internet connection available.';
+}
 
 class HttpExchangeRateRepository implements ExchangeRateRepository {
   HttpExchangeRateRepository({http.Client? client})
@@ -68,6 +77,13 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
       });
       rethrow;
     }
+  }
+
+  bool _isNetworkError(Object error) {
+    return error is SocketException ||
+        error is http.ClientException ||
+        error is TimeoutException ||
+        error is HandshakeException;
   }
 
   @override
@@ -136,6 +152,10 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
         );
         snapshotNotifier.value = _cachedSnapshot;
         return _cachedSnapshot!;
+      }
+
+      if (_isNetworkError(error)) {
+        throw const NetworkUnavailableException();
       }
 
       rethrow;
@@ -213,6 +233,14 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
   Future<void> setFavorite(String id, bool isFavorite) async {
     final snapshot = _cachedSnapshot ?? await _loadSavedSnapshot();
     if (snapshot == null) {
+      return;
+    }
+
+    final alreadyFavorite = snapshot.rates.any(
+      (rate) => rate.id == id && rate.isFavorite,
+    );
+    final favoriteCount = snapshot.rates.where((rate) => rate.isFavorite).length;
+    if (isFavorite && !alreadyFavorite && favoriteCount >= 2) {
       return;
     }
 
@@ -301,7 +329,7 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
     final response = await _client
         .get(uri, headers: _supabaseHeaders())
         .timeout(const Duration(seconds: 12));
-     //   print("Tasas: ${response.body}");
+     //  print("Tasas: ${response.body}");
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw FormatException('Supabase respondio ${response.statusCode}');
     }
@@ -351,7 +379,7 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
       final response = await _client
           .get(uri, headers: _supabaseHeaders())
           .timeout(const Duration(seconds: 12));
-
+ // print("Historico: ${response.body}");
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw FormatException(
           'Supabase historico respondio ${response.statusCode}',
@@ -359,10 +387,6 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
       }
 
       final decoded = jsonDecode(utf8.decode(response.bodyBytes));
-      if (decoded is! Map<String, dynamic>) {
-        throw const FormatException('Respuesta de historico invalida');
-      }
-
       final histories = _extractHistoryEntries(decoded);
       _cachedHistory = histories;
 
@@ -448,51 +472,92 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
   }
 
   Map<String, List<ExchangeRateHistoryPoint>> _extractHistoryEntries(
-    Map<String, dynamic> decoded,
+    Object decoded,
   ) {
     final histories = <String, List<ExchangeRateHistoryPoint>>{};
 
-    for (final entry in decoded.entries) {
-      final historyKey = _historyBindingKey(entry.key);
-      final rawPoints = entry.value;
-      if (rawPoints is! List) {
-        continue;
-      }
-
-      final points = <ExchangeRateHistoryPoint>[];
-      for (final rawPoint in rawPoints) {
-        if (rawPoint is! Map<String, dynamic>) {
+    if (decoded is Map<String, dynamic>) {
+      for (final entry in decoded.entries) {
+        final historyKey = _historyBindingKey(entry.key);
+        final rawPoints = entry.value;
+        if (rawPoints is! List) {
           continue;
         }
 
-        final date = _extractDate(rawPoint['fecha'] ?? rawPoint['created_at']);
-        final value = _tryParseNumber(rawPoint['monto'] ?? rawPoint['valor']);
-        final currencyCode = _normalizeCurrencyCode(
-          _cleanString(rawPoint['moneda']) ?? entry.key,
-        );
-        if (date == null || value == null || value <= 0) {
+        final points = _parseHistoryPoints(rawPoints, fallbackKey: entry.key);
+        if (points.isNotEmpty) {
+          histories[historyKey] = points;
+        }
+      }
+      return histories;
+    }
+
+    if (decoded is List) {
+      for (final rawEntry in decoded) {
+        if (rawEntry is! Map<String, dynamic>) {
           continue;
         }
 
-        points.add(
-          ExchangeRateHistoryPoint(
-            date: DateTime(date.year, date.month, date.day),
-            value: value,
-            currencyCode: currencyCode,
-          ),
+        final historyKey = _historyBindingKey(
+          _cleanString(rawEntry['nombre'] ?? rawEntry['name']) ??
+              rawEntry['moneda']?.toString() ??
+              '',
         );
+        if (historyKey.isEmpty) {
+          continue;
+        }
+
+        final points = _parseHistoryPoints([rawEntry],
+            fallbackKey: rawEntry['moneda']?.toString() ?? '');
+        if (points.isEmpty) {
+          continue;
+        }
+
+        histories.putIfAbsent(historyKey, () => []).addAll(points);
       }
 
-      points.sort((a, b) => a.date.compareTo(b.date));
-      if (points.isNotEmpty) {
-        histories[historyKey] = points;
+      for (final entry in histories.entries) {
+        entry.value.sort((a, b) => a.date.compareTo(b.date));
       }
+      return histories;
     }
 
     return histories;
   }
 
-List<_SupabaseRateEntry> _extractRateEntries(
+  List<ExchangeRateHistoryPoint> _parseHistoryPoints(
+    List<dynamic> rawPoints, {
+    required String fallbackKey,
+  }) {
+    final points = <ExchangeRateHistoryPoint>[];
+
+    for (final rawPoint in rawPoints) {
+      if (rawPoint is! Map<String, dynamic>) {
+        continue;
+      }
+
+      final date = _extractDate(rawPoint['fecha'] ?? rawPoint['created_at']);
+      final value = _tryParseNumber(rawPoint['monto'] ?? rawPoint['valor']);
+      final currencyCode = _normalizeCurrencyCode(
+        _cleanString(rawPoint['moneda']) ?? fallbackKey,
+      );
+      if (date == null || value == null || value <= 0) {
+        continue;
+      }
+
+      points.add(
+        ExchangeRateHistoryPoint(
+          date: DateTime(date.year, date.month, date.day),
+          value: value,
+          currencyCode: currencyCode,
+        ),
+      );
+    }
+
+    return points;
+  }
+
+  List<_SupabaseRateEntry> _extractRateEntries(
      Map<String, dynamic> decoded,
    ) {
      final entries = <_SupabaseRateEntry>[];
@@ -668,7 +733,6 @@ entries.add(_SupabaseRateEntry(
       id: code,
       code: code,
       name: code,
-      source: 'API de tasas',
       value: 0,
       symbol: code.length <= 3 ? code : code.substring(0, 3),
       updatedAt: updatedAt,
@@ -775,7 +839,6 @@ return ExchangeRate(
        id: id,
        code: base.code,
        name: entry.name ?? base.name,
-       source: base.source,
        value: normalizedValue,
        symbol: entry.simbolo ?? base.symbol,
        updatedAt: hasValidValue ? updatedAt : previous?.updatedAt ?? updatedAt,

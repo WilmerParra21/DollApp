@@ -3,7 +3,6 @@ class ExchangeRate {
     required this.id,
     required this.code,
     required this.name,
-    required this.source,
     required this.value,
     required this.symbol,
     required this.updatedAt,
@@ -23,7 +22,6 @@ class ExchangeRate {
   final String id;
   final String code;
   final String name;
-  final String source;
   final double value;
   final String symbol;
   final DateTime updatedAt;
@@ -39,7 +37,7 @@ class ExchangeRate {
   final String? conversionCode;
   final bool isFavorite;
 
-  bool get isUp => changePercent >= 0;
+  bool get isUp => changePercent > 0;
   bool get hasTrend => sparklineValues.length >= 2 && changePercent.abs() > 0.01;
 
   ExchangeRate copyWith({
@@ -54,7 +52,6 @@ class ExchangeRate {
       id: id ?? this.id,
       code: code,
       name: name,
-      source: source,
       value: value,
       symbol: symbol,
       updatedAt: updatedAt,
@@ -77,7 +74,6 @@ class ExchangeRate {
       'id': id,
       'code': code,
       'name': name,
-      'source': source,
       'value': value,
       'symbol': symbol,
       'updatedAt': updatedAt.toIso8601String(),
@@ -101,7 +97,6 @@ class ExchangeRate {
       id: id,
       code: json['code'] as String,
       name: json['name'] as String,
-      source: json['source'] as String,
       value: (json['value'] as num).toDouble(),
       symbol: json['symbol'] as String,
       updatedAt: DateTime.parse(json['updatedAt'] as String),

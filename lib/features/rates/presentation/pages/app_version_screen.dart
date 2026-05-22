@@ -79,11 +79,11 @@ class AppVersionScreen extends StatelessWidget {
                     const SizedBox(height: 12),
                     VersionInfoCard(
                       children: const [
-                        _InfoRow(label: 'Versión', value: '1.0.3'),
-                        _InfoRow(label: 'Estado', value: 'Alpha v3'),
+                        _InfoRow(label: 'Versión', value: '1.0.4'),
+                        _InfoRow(label: 'Estado', value: 'Beta'),
                         _InfoRow(
                           label: 'Última actualización',
-                          value: '16/05/2026',
+                          value: '19/05/2026',
                         ),
                       ],
                     ),

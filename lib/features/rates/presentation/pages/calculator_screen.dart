@@ -1,12 +1,15 @@
+import 'package:dollapp/core/models/audit_log.dart';
+import 'package:dollapp/core/services/audit_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../../../app/app_routes.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/utils/currency_formatter.dart';
 import '../../../../core/widgets/app_background.dart';
-import '../../../../core/widgets/mini_sparkline.dart';
 import '../../../../core/widgets/trend_indicator.dart';
 import '../../data/http_exchange_rate_repository.dart';
+import '../../data/pinned_conversion_store.dart';
 import '../../models/exchange_rate.dart';
 import '../../models/exchange_rate_snapshot.dart';
 import '../../utils/exchange_pair_quote.dart';
@@ -17,6 +20,7 @@ class CalculatorScreen extends StatefulWidget {
     this.fixedRateCode,
     this.initialFromCode,
     this.initialToCode,
+    this.closeAppOnBack = false,
     super.key,
   });
 
@@ -24,6 +28,7 @@ class CalculatorScreen extends StatefulWidget {
   final String? fixedRateCode;
   final String? initialFromCode;
   final String? initialToCode;
+  final bool closeAppOnBack;
 
   @override
   State<CalculatorScreen> createState() => _CalculatorScreenState();
@@ -33,16 +38,19 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
   final TextEditingController _amountController = TextEditingController(
     text: '1',
   );
-  static const List<int> _quickAmounts = [1, 5, 10, 20, 50, 100];
+  static const List<int> _quickAmounts = [5, 10, 20, 50, 100];
   late final ValueNotifier<ExchangeRateSnapshot?> _snapshotNotifier;
 
   ExchangeRateSnapshot? _bootSnapshot;
+  ExchangeRateSnapshot? _currentSnapshot;
   bool _appliedRouteDirection = false;
   bool _fixedQuoteInvalid = false;
   ParsedQuote? _activeQuote;
   bool _missingQuoteBinding = false;
   bool _isLoading = true;
   bool _isRefreshing = false;
+  bool _isPinned = false;
+  bool _offlineNoData = false;
 
   String _fromCode = '';
   String _toCode = '';
@@ -52,23 +60,81 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
   void initState() {
     super.initState();
     _snapshotNotifier = HttpExchangeRateRepository.instance.snapshotNotifier;
+    _snapshotNotifier.addListener(_onSnapshotUpdated);
+    _loadPinnedStatus();
     _loadCachedSnapshot();
     _startBackgroundRefresh();
-
   }
 
   Future<void> _loadCachedSnapshot() async {
-    final cached = await HttpExchangeRateRepository.instance.loadSavedSnapshot();
+    final cached = await HttpExchangeRateRepository.instance
+        .loadSavedSnapshot();
     if (!mounted) return;
 
     if (cached != null) {
       setState(() {
         _bootSnapshot ??= cached;
+        _currentSnapshot ??= cached;
         _applyRouteDirectionOnce(cached);
         _rebindActiveQuote(cached);
+        _maybeClearInvalidPinnedConversion(cached);
         _isLoading = false;
+        _offlineNoData = false;
       });
+      return;
     }
+
+    setState(() {
+      _isLoading = false;
+      _offlineNoData = true;
+    });
+  }
+
+  Future<void> _loadPinnedStatus() async {
+    final pinned = await PinnedConversionStore.loadPinnedConversion();
+    if (!mounted) return;
+
+    setState(() {
+      _isPinned = _isCurrentConversionPinned(pinned);
+    });
+  }
+
+  bool _isCurrentConversionPinned(PinnedConversion pinned) {
+    final fixedId = widget.fixedRateId?.trim();
+    final fixedCode = widget.fixedRateCode?.trim();
+    final fromCode = widget.initialFromCode?.trim();
+    final toCode = widget.initialToCode?.trim();
+
+    if (pinned.rateId != null &&
+        pinned.rateId!.isNotEmpty &&
+        fixedId != null &&
+        fixedId.isNotEmpty &&
+        pinned.rateId == fixedId) {
+      return true;
+    }
+
+    if (pinned.rateCode != null &&
+        pinned.rateCode!.isNotEmpty &&
+        fixedCode != null &&
+        fixedCode.isNotEmpty &&
+        pinned.rateCode == fixedCode) {
+      return true;
+    }
+
+    if (pinned.fromCode != null &&
+        pinned.toCode != null &&
+        pinned.fromCode!.isNotEmpty &&
+        pinned.toCode!.isNotEmpty &&
+        fromCode != null &&
+        fromCode.isNotEmpty &&
+        toCode != null &&
+        toCode.isNotEmpty &&
+        pinned.fromCode!.trim() == fromCode &&
+        pinned.toCode!.trim() == toCode) {
+      return true;
+    }
+
+    return false;
   }
 
   Future<void> _startBackgroundRefresh() async {
@@ -78,17 +144,40 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       );
       if (!mounted) return;
 
+      if (_bootSnapshot != null && !_canBindSnapshot(latest)) {
+        _showSnackBar(
+          'No se pudo actualizar la tasa fijada. Se mantiene la tasa anterior.',
+        );
+        return;
+      }
+
       setState(() {
-        _bootSnapshot ??= latest;
+        _bootSnapshot = latest;
+        _currentSnapshot = latest;
         _applyRouteDirectionOnce(latest);
         _rebindActiveQuote(latest);
+        _maybeClearInvalidPinnedConversion(latest);
         _isLoading = false;
+        _offlineNoData = false;
       });
-    } catch (_) {
+    } catch (error) {
+      Future.microtask(() async {
+        try {
+          await AuditService.instance.logError(
+            AuditLog(
+              accion: 'CALCULATOR_BACKGROUND_REFRESH_FAILED',
+              mensaje: error.toString(),
+              codigo: error.runtimeType.toString(),
+              metadatos: {'stage': 'background_refresh'},
+            ),
+          );
+        } catch (_) {}
+      });
       if (!mounted) return;
       if (_bootSnapshot == null) {
         setState(() {
           _isLoading = false;
+          _offlineNoData = true;
         });
       } else {
         _showSnackBar(
@@ -100,6 +189,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
 
   @override
   void dispose() {
+    _snapshotNotifier.removeListener(_onSnapshotUpdated);
     _amountController.dispose();
     super.dispose();
   }
@@ -262,73 +352,134 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
         : AppColors.lightBackground;
     final appBarForeground = isDark ? AppColors.white : AppColors.forestGreen;
 
-    return Scaffold(
-      backgroundColor: appBarBackground,
-      appBar: AppBar(
+    // ignore: deprecated_member_use
+    return WillPopScope(
+      onWillPop: () async {
+        // When the calculator is shown for a pinned fixed rate, the hardware back button
+        // should exit the app instead of navigating back to the list screen.
+        return true;
+      },
+      child: Scaffold(
         backgroundColor: appBarBackground,
-        foregroundColor: appBarForeground,
-        surfaceTintColor: Colors.transparent,
-        leading: IconButton(
-          tooltip: 'Volver',
-          style: IconButton.styleFrom(
-            foregroundColor: appBarForeground,
-            backgroundColor: appBarForeground.withValues(alpha: .08),
-          ),
-          icon: const Icon(Icons.arrow_back_rounded),
-          onPressed: () => Navigator.pop(context),
-        ),
-        title: Text("Calculadora"),
-      ),
-      body: SafeArea(
-        child: AppBackground(
-          child: SizedBox.expand(
-            child: ValueListenableBuilder<ExchangeRateSnapshot?>(
-              valueListenable: _snapshotNotifier,
-              builder: (context, snapshot, child) {
-                final ratesSnapshot = snapshot ?? _bootSnapshot;
-                final isLoading = _isLoading && ratesSnapshot == null;
-
-                if (isLoading) {
-                  return const _CalculatorSkeleton();
-                }
-
-                if (ratesSnapshot == null) {
-                  return _QuoteLoadProblem(onRetry: _refreshRates);
-                }
-
-                if (_fixedQuoteInvalid) {
-                  return _InvalidFixedRateProblem(onRetry: _refreshRates);
-                }
-
-                final rowForUi = _resolvedRowForTrend();
-                if (_missingQuoteBinding || rowForUi == null || _activeQuote == null) {
-                  return _QuoteLoadProblem(onRetry: _refreshRates);
-                }
-
-                final currencyNames = _namesForCalculatorPair(ratesSnapshot);
-                final currencyBadges = _badgesForCalculatorPair(ratesSnapshot);
-
-                return _CalculatorContent(
-                  amountController: _amountController,
-                  quickAmounts: _quickAmounts,
-                  selectedQuickAmount: _selectedQuickAmount,
-                  fromCode: _fromCode,
-                  toCode: _toCode,
-                  currencyNames: currencyNames,
-                  currencyBadges: currencyBadges,
-                  selectedRate: rowForUi,
-                  amount: _amount,
-                  formattedResult: _formattedResult(),
-                  rateLabel: _formattedRateLabel(),
-                  onAmountChanged: () => setState(() => _selectedQuickAmount = -1),
-                  onClear: _clear,
-                  onCopy: _copyResult,
-                  onPickFrom: _noopPickHandler,
-                  onPickTo: _noopPickHandler,
-                  onSwap: () => _swapCurrencies(ratesSnapshot),
-                  onQuickAmount: _setQuickAmount,
+        appBar: AppBar(
+          backgroundColor: appBarBackground,
+          foregroundColor: appBarForeground,
+          surfaceTintColor: Colors.transparent,
+          leading: IconButton(
+            tooltip: widget.closeAppOnBack ? 'Menú' : 'Volver',
+            style: IconButton.styleFrom(
+              foregroundColor: appBarForeground,
+              backgroundColor: appBarForeground.withValues(alpha: .08),
+            ),
+            icon: Icon(
+              widget.closeAppOnBack
+                  ? Icons.menu_rounded
+                  : Icons.arrow_back_rounded,
+            ),
+            onPressed: () {
+              if (widget.closeAppOnBack) {
+                Navigator.pushReplacementNamed(
+                  context,
+                  AppRoutes.home,
+                  arguments: const HomeRouteArgs(skipPinnedRedirect: true),
                 );
-              },
+              } else {
+                Navigator.pop(context);
+              }
+            },
+          ),
+          title: const Text('Calculadora'),
+        ),
+        body: SafeArea(
+          child: AppBackground(
+            child: SizedBox.expand(
+              child: ValueListenableBuilder<ExchangeRateSnapshot?>(
+                valueListenable: _snapshotNotifier,
+                builder: (context, snapshot, child) {
+                  final ratesSnapshot =
+                      snapshot ?? _currentSnapshot ?? _bootSnapshot;
+                  final isLoading = _isLoading && ratesSnapshot == null;
+
+                  if (isLoading) {
+                    return const _CalculatorSkeleton();
+                  }
+
+                  if (ratesSnapshot == null) {
+                    return _QuoteLoadProblem(
+                      onRetry: _refreshRates,
+                      message: _offlineNoData
+                          ? 'No hay conexión y no hay datos guardados. Conecta a internet para descargar las tasas reales.'
+                          : 'No se pudo cargar la tasa para cotizar. Revisa tu conexión e intenta de nuevo.',
+                    );
+                  }
+
+                  if (_fixedQuoteInvalid) {
+                    return _InvalidFixedRateProblem(onRetry: _refreshRates);
+                  }
+
+                  final rowForUi = _resolvedRowForTrend();
+                  if (_missingQuoteBinding ||
+                      rowForUi == null ||
+                      _activeQuote == null) {
+                    return _QuoteLoadProblem(
+                      onRetry: _refreshRates,
+                      message:
+                          'No se pudo cargar la tasa para cotizar. Revisa tu conexión e intenta de nuevo.',
+                    );
+                  }
+
+                  final currencyNames = _namesForCalculatorPair(ratesSnapshot);
+                  final currencyBadges = _badgesForCalculatorPair(
+                    ratesSnapshot,
+                  );
+
+                  final favoriteRates = ratesSnapshot.rates
+                      .where((rate) => rate.isFavorite)
+                      .toList();
+                  final canPin = rowForUi.isFavorite;
+                  final otherFavoriteRate =
+                      favoriteRates.length == 2 && rowForUi.isFavorite
+                      ? favoriteRates.firstWhere(
+                          (rate) => rate.id != rowForUi.id,
+                        )
+                      : null;
+                  final otherFavoriteLabel = otherFavoriteRate == null
+                      ? null
+                      : _favoriteConversionLabel(otherFavoriteRate);
+
+                  return _CalculatorContent(
+                    amountController: _amountController,
+                    quickAmounts: _quickAmounts,
+                    selectedQuickAmount: _selectedQuickAmount,
+                    fromCode: _fromCode,
+                    toCode: _toCode,
+                    currencyNames: currencyNames,
+                    currencyBadges: currencyBadges,
+                    selectedRate: rowForUi,
+                    amount: _amount,
+                    formattedResult: _formattedResult(),
+                    rateLabel: _formattedRateLabel(),
+                    isPinned: _isPinned,
+                    canPin: canPin,
+                    otherFavoriteLabel: otherFavoriteLabel,
+                    onSwitchFavorite: otherFavoriteRate == null
+                        ? null
+                        : () => _switchToOtherFavorite(
+                            ratesSnapshot,
+                            otherFavoriteRate,
+                          ),
+                    onAmountChanged: () =>
+                        setState(() => _selectedQuickAmount = -1),
+                    onClear: _clear,
+                    onCopy: _copyResult,
+                    onPickFrom: _noopPickHandler,
+                    onPickTo: _noopPickHandler,
+                    onSwap: () => _swapCurrencies(ratesSnapshot),
+                    onPinChanged: _togglePinnedConversion,
+                    onQuickAmount: _setQuickAmount,
+                  );
+                },
+              ),
             ),
           ),
         ),
@@ -352,13 +503,40 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       );
       if (!mounted) return;
 
+      if (_bootSnapshot != null && !_canBindSnapshot(latest)) {
+        _showSnackBar(
+          'No se pudo actualizar la tasa fijada. Se mantiene la tasa anterior.',
+        );
+        return;
+      }
+
       setState(() {
-        _bootSnapshot ??= latest;
+        _bootSnapshot = latest;
+        _currentSnapshot = latest;
         _applyRouteDirectionOnce(latest);
         _rebindActiveQuote(latest);
+        _maybeClearInvalidPinnedConversion(latest);
+        _offlineNoData = false;
       });
-    } catch (_) {
-      if (mounted) {
+    } catch (error) {
+      Future.microtask(() async {
+        try {
+          await AuditService.instance.logError(
+            AuditLog(
+              accion: 'CALCULATOR_REFRESH_RATES_FAILED',
+              mensaje: error.toString(),
+              codigo: error.runtimeType.toString(),
+              metadatos: {'stage': 'refresh_rates'},
+            ),
+          );
+        } catch (_) {}
+      });
+      if (!mounted) return;
+      if (error is NetworkUnavailableException) {
+        _showSnackBar(
+          'Sin conexión. Conecta a internet para actualizar las tasas.',
+        );
+      } else {
         _showSnackBar('No se pudo cargar la tasa para cotizar.');
       }
     } finally {
@@ -370,6 +548,48 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
     }
   }
 
+  void _onSnapshotUpdated() {
+    final snapshot = _snapshotNotifier.value;
+    if (snapshot == null || !mounted) return;
+
+    if (_bootSnapshot != null && !_canBindSnapshot(snapshot)) {
+      // Mantener la snapshot anterior si la nueva no puede satisfacer la tasa actual.
+      return;
+    }
+
+    setState(() {
+      _currentSnapshot = snapshot;
+      _bootSnapshot ??= snapshot;
+      _applyRouteDirectionOnce(snapshot);
+      _rebindActiveQuote(snapshot);
+      _maybeClearInvalidPinnedConversion(snapshot);
+      _offlineNoData = false;
+    });
+  }
+
+  bool _canBindSnapshot(ExchangeRateSnapshot snapshot) {
+    final fixedId = widget.fixedRateId?.trim();
+    if (fixedId != null && fixedId.isNotEmpty) {
+      return snapshot.tryById(fixedId) != null;
+    }
+
+    final fixedCode = widget.fixedRateCode?.trim();
+    if (fixedCode != null && fixedCode.isNotEmpty) {
+      return snapshot.tryByCode(fixedCode) != null;
+    }
+
+    final fromCode = widget.initialFromCode?.trim();
+    final toCode = widget.initialToCode?.trim();
+    if (fromCode != null &&
+        fromCode.isNotEmpty &&
+        toCode != null &&
+        toCode.isNotEmpty) {
+      return findQuoteForCurrencyPair(snapshot, fromCode, toCode) != null;
+    }
+
+    return true;
+  }
+
   void _swapCurrencies(ExchangeRateSnapshot snapshot) {
     setState(() {
       final previousFrom = _fromCode;
@@ -379,19 +599,26 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
     });
   }
 
-Map<String, String> _namesForCalculatorPair(ExchangeRateSnapshot snapshot) {
+  Map<String, String> _namesForCalculatorPair(ExchangeRateSnapshot snapshot) {
     return {
-      for (final entry in {_fromCode, _toCode}.map((c) => canonicalCurrencyCode(c)))
+      for (final entry in {
+        _fromCode,
+        _toCode,
+      }.map((c) => canonicalCurrencyCode(c)))
         entry: entry,
     };
   }
 
   Map<String, String> _badgesForCalculatorPair(ExchangeRateSnapshot snapshot) {
     final badges = <String, String>{};
-    for (final code in {_fromCode, _toCode}.map((c) => canonicalCurrencyCode(c)).toSet()) {
+    for (final code in {
+      _fromCode,
+      _toCode,
+    }.map((c) => canonicalCurrencyCode(c)).toSet()) {
       final matchingRate = snapshot.rates.firstWhere(
-        (r) => r.displayCurrencyCode?.toUpperCase() == code.toUpperCase() ||
-                 r.code.toUpperCase() == code.toUpperCase(),
+        (r) =>
+            r.displayCurrencyCode?.toUpperCase() == code.toUpperCase() ||
+            r.code.toUpperCase() == code.toUpperCase(),
         orElse: () => snapshot.rates.firstWhere(
           (r) => r.conversionCode?.toUpperCase() == code.toUpperCase(),
           orElse: () => snapshot.rates.first,
@@ -412,10 +639,78 @@ Map<String, String> _namesForCalculatorPair(ExchangeRateSnapshot snapshot) {
     });
   }
 
+  Future<void> _togglePinnedConversion(bool value) async {
+    final rate = _resolvedRowForTrend();
+    if (value) {
+      if (rate?.isFavorite != true) {
+        _showSnackBar('Solo puedes fijar una conversión favorita.');
+        return;
+      }
+
+      await PinnedConversionStore.savePinnedConversion(
+        rateId: rate?.id,
+        rateCode: rate?.code,
+        fromCode: _fromCode,
+        toCode: _toCode,
+      );
+      if (!mounted) return;
+      setState(() {
+        _isPinned = true;
+      });
+      _showSnackBar('Conversión fijada para mostrarla al iniciar.');
+      return;
+    }
+
+    await PinnedConversionStore.clearPinnedConversion();
+    if (!mounted) return;
+    setState(() {
+      _isPinned = false;
+    });
+    _showSnackBar('Fijado eliminado. Verás la lista de tasas al iniciar.');
+  }
+
+  Future<void> _switchToOtherFavorite(
+    ExchangeRateSnapshot snapshot,
+    ExchangeRate otherFavorite,
+  ) async {
+    final parsed = tryParseQuote(otherFavorite);
+    if (parsed == null) {
+      _showSnackBar('No se pudo cambiar a la otra favorita.');
+      return;
+    }
+
+    setState(() {
+      _fromCode = parsed.anchor;
+      _toCode = parsed.counter;
+      _rebindActiveQuote(snapshot);
+      _isPinned = false;
+    });
+    await _loadPinnedStatus();
+    _showSnackBar('Mostrando la otra conversión favorita.');
+  }
+
+  String _favoriteConversionLabel(ExchangeRate otherFavorite) {
+    final parsed = tryParseQuote(otherFavorite);
+    if (parsed == null) {
+      return otherFavorite.code;
+    }
+    final anchor = canonicalCurrencyCode(parsed.anchor);
+    final counter = canonicalCurrencyCode(parsed.counter);
+    return '$anchor / $counter';
+  }
+
+  void _maybeClearInvalidPinnedConversion(ExchangeRateSnapshot snapshot) {
+    final current = _resolvedRowForTrend();
+    if (_isPinned && current != null && !current.isFavorite) {
+      PinnedConversionStore.clearPinnedConversion();
+      _isPinned = false;
+    }
+  }
+
   void _clear() {
     setState(() {
-      _selectedQuickAmount = -1;
-      _amountController.text = '';
+      _selectedQuickAmount = 1;
+      _amountController.text = '1';
       _amountController.selection = TextSelection.fromPosition(
         TextPosition(offset: _amountController.text.length),
       );
@@ -423,6 +718,10 @@ Map<String, String> _namesForCalculatorPair(ExchangeRateSnapshot snapshot) {
   }
 
   Future<void> _copyResult() async {
+    if (_amount == 0) {
+      _showSnackBar('Ingresa un monto mayor a 0 para copiar.');
+      return;
+    }
     final numeric = _computedNumericResult();
     if (numeric.isNaN || numeric.isInfinite) {
       _showSnackBar('No hay tasa disponible para copiar el resultado.');
@@ -442,9 +741,10 @@ Map<String, String> _namesForCalculatorPair(ExchangeRateSnapshot snapshot) {
 }
 
 class _QuoteLoadProblem extends StatelessWidget {
-  const _QuoteLoadProblem({required this.onRetry});
+  const _QuoteLoadProblem({required this.onRetry, required this.message});
 
   final VoidCallback onRetry;
+  final String message;
 
   @override
   Widget build(BuildContext context) {
@@ -455,12 +755,11 @@ class _QuoteLoadProblem extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              'No se pudo cargar la tasa para cotizar. '
-              'Revisa tu conexion e intenta de nuevo.',
+              message,
               textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 18),
             OutlinedButton.icon(
@@ -492,9 +791,9 @@ class _InvalidFixedRateProblem extends StatelessWidget {
               'La tasa seleccionada no tiene datos válidos para cotizar '
               '(monto igual o menor a cero).',
               textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 18),
             OutlinedButton.icon(
@@ -522,12 +821,17 @@ class _CalculatorContent extends StatelessWidget {
     required this.amount,
     required this.formattedResult,
     required this.rateLabel,
+    required this.isPinned,
+    required this.canPin,
+    this.otherFavoriteLabel,
+    this.onSwitchFavorite,
     required this.onAmountChanged,
     required this.onClear,
     required this.onCopy,
     required this.onPickFrom,
     required this.onPickTo,
     required this.onSwap,
+    required this.onPinChanged,
     required this.onQuickAmount,
   });
 
@@ -542,12 +846,17 @@ class _CalculatorContent extends StatelessWidget {
   final double amount;
   final String formattedResult;
   final String rateLabel;
+  final bool isPinned;
+  final bool canPin;
+  final String? otherFavoriteLabel;
+  final VoidCallback? onSwitchFavorite;
   final VoidCallback onAmountChanged;
   final VoidCallback onClear;
   final VoidCallback onCopy;
   final VoidCallback onPickFrom;
   final VoidCallback onPickTo;
   final VoidCallback onSwap;
+  final ValueChanged<bool> onPinChanged;
   final ValueChanged<int> onQuickAmount;
 
   @override
@@ -568,11 +877,29 @@ class _CalculatorContent extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  _PinnedConversionToggle(
+                    isPinned: isPinned,
+                    canPin: canPin,
+                    onChanged: onPinChanged,
+                  ),
+                  if (onSwitchFavorite != null) ...[
+                    const SizedBox(height: 6),
+                    OutlinedButton.icon(
+                      onPressed: onSwitchFavorite,
+                      icon: const Icon(Icons.swap_horiz_rounded),
+                      label: Text(
+                        otherFavoriteLabel == null
+                            ? 'Cambiar favorita'
+                            : 'Cambiar favorita ($otherFavoriteLabel)',
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 10),
                   _AmountField(
                     controller: amountController,
                     onChanged: onAmountChanged,
                     onClear: onClear,
-                    currency: currencyNames[fromCode]!
+                    currency: currencyNames[fromCode]!,
                   ),
                   const SizedBox(height: 18),
                   _CurrencyFlow(
@@ -603,7 +930,7 @@ class _CalculatorContent extends StatelessWidget {
                       fontWeight: FontWeight.w800,
                     ),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 6),
                   _QuickAmounts(
                     amounts: quickAmounts,
                     selectedAmount: selectedQuickAmount,
@@ -619,23 +946,72 @@ class _CalculatorContent extends StatelessWidget {
   }
 }
 
+class _PinnedConversionToggle extends StatelessWidget {
+  const _PinnedConversionToggle({
+    required this.isPinned,
+    required this.canPin,
+    required this.onChanged,
+  });
+
+  final bool isPinned;
+  final bool canPin;
+  final ValueChanged<bool>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Fijar conversión al iniciar.',
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    canPin
+                        ? 'Al activar se fija la conversión con tus favoritas.'
+                        : 'Solo las conversiones favoritas pueden fijarse.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Switch.adaptive(value: isPinned, onChanged: onChanged),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
 class _AmountField extends StatelessWidget {
   const _AmountField({
     required this.controller,
     required this.onChanged,
     required this.onClear,
-    required this.currency, 
+    required this.currency,
   });
 
   final TextEditingController controller;
   final VoidCallback onChanged;
   final VoidCallback onClear;
   final String currency;
-  
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-  
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -648,76 +1024,80 @@ class _AmountField extends StatelessWidget {
         ),
         const SizedBox(height: 4),
         TextField(
-  controller: controller,
-  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-  inputFormatters: [
-    FilteringTextInputFormatter.allow(RegExp(r'[0-9,.]')),
-  ],
-  onChanged: (_) => onChanged(),
-  style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-        fontWeight: FontWeight.w600,
-        height: 1.1, // Ajuste ligero para alineación vertical
-      ),
-  decoration: InputDecoration(
-    hintText: '0',
-    contentPadding: const EdgeInsets.only(right: 12), // Quitamos el padding izquierdo para que el prefijo pegue
-    
-    // USAMOS prefix PARA CONTROL TOTAL
-    prefixIcon: Container(
-      margin: const EdgeInsets.only(right: 12), // Espacio entre el fondo del símbolo y el número
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      decoration: BoxDecoration(
-        // Color de fondo que ocupa toda la sección izquierda
-        color: Theme.of(context).brightness == Brightness.dark
-            ? Colors.white.withValues(alpha: 0.08)
-            : Colors.black.withValues(alpha: 0.04),
-        // Redondeamos solo las esquinas de la izquierda para que encaje con el borde del TextField
-        borderRadius: const BorderRadius.only(
-          topLeft: Radius.circular(12),
-          bottomLeft: Radius.circular(12),
-        ),
-      ),
-      // Usamos Center con heightFactor para que el fondo se estire
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            currency,
-            style: TextStyle(
-              color: Theme.of(context).colorScheme.primary,
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-            ),
+          controller: controller,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          inputFormatters: [
+            FilteringTextInputFormatter.allow(RegExp(r'[0-9,.]')),
+          ],
+          onChanged: (_) => onChanged(),
+          style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+            fontWeight: FontWeight.w600,
+            height: 1.1, // Ajuste ligero para alineación vertical
           ),
-        ],
-      ),
-    ),
-    
-    // ESTO ES CLAVE: Quitar las restricciones por defecto
-    prefixIconConstraints: const BoxConstraints(
-      minHeight: 64, // Ajusta esto al alto de tu TextField
-      minWidth: 60,
-    ),
-    
-    suffixIcon: IconButton(
-      tooltip: 'Limpiar monto',
-      icon: const Icon(Icons.cancel_rounded),
-      color: Theme.of(context).colorScheme.onSurfaceVariant,
-      onPressed: onClear,
-    ),
-    
-    // BORDES: Asegúrate de que el radio coincida con el del Container del prefijo
-    border: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(12),
-      borderSide: BorderSide.none,
-    ),
-    filled: true,
-    fillColor: Theme.of(context).brightness == Brightness.dark
-        ? Colors.white.withValues(alpha: 0.05)
-        : Colors.black.withValues(alpha: 0.02),
-  ),
-), ],
+          decoration: InputDecoration(
+            hintText: '0',
+            contentPadding: const EdgeInsets.only(
+              right: 12,
+            ), // Quitamos el padding izquierdo para que el prefijo pegue
+            // USAMOS prefix PARA CONTROL TOTAL
+            prefixIcon: Container(
+              margin: const EdgeInsets.only(
+                right: 12,
+              ), // Espacio entre el fondo del símbolo y el número
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              decoration: BoxDecoration(
+                // Color de fondo que ocupa toda la sección izquierda
+                color: Theme.of(context).brightness == Brightness.dark
+                    ? Colors.white.withValues(alpha: 0.08)
+                    : Colors.black.withValues(alpha: 0.04),
+                // Redondeamos solo las esquinas de la izquierda para que encaje con el borde del TextField
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(12),
+                  bottomLeft: Radius.circular(12),
+                ),
+              ),
+              // Usamos Center con heightFactor para que el fondo se estire
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    currency,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.primary,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // ESTO ES CLAVE: Quitar las restricciones por defecto
+            prefixIconConstraints: const BoxConstraints(
+              minHeight: 64, // Ajusta esto al alto de tu TextField
+              minWidth: 60,
+            ),
+
+            suffixIcon: IconButton(
+              tooltip: 'Limpiar monto',
+              icon: const Icon(Icons.cancel_rounded),
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              onPressed: onClear,
+            ),
+
+            // BORDES: Asegúrate de que el radio coincida con el del Container del prefijo
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide.none,
+            ),
+            filled: true,
+            fillColor: Theme.of(context).brightness == Brightness.dark
+                ? Colors.white.withValues(alpha: 0.05)
+                : Colors.black.withValues(alpha: 0.02),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -811,46 +1191,45 @@ class _CurrencyPickerCard extends StatelessWidget {
         Material(
           color: colorScheme.surface.withValues(alpha: .9),
           borderRadius: BorderRadius.circular(12),
-          child:  Container(
-              height: 58,
-              padding: const EdgeInsets.symmetric(horizontal: 10),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: colorScheme.outlineVariant.withValues(alpha: .7),
-                ),
-              ),
-              child: Row(
-                children: [
-                  _CurrencyMark(code: code, badge: badge),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          code,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.titleMedium
-                              ?.copyWith(fontWeight: FontWeight.w900),
-                        ),
-                        if (showName)
-                          Text(
-                            name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.labelSmall
-                                ?.copyWith(color: colorScheme.onSurfaceVariant),
-                          ),
-                      ],
-                    ),
-                  ),
-                ],
+          child: Container(
+            height: 58,
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: colorScheme.outlineVariant.withValues(alpha: .7),
               ),
             ),
-         
+            child: Row(
+              children: [
+                _CurrencyMark(code: code, badge: badge),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        code,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w900),
+                      ),
+                      if (showName)
+                        Text(
+                          name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(color: colorScheme.onSurfaceVariant),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ],
     );
@@ -973,7 +1352,6 @@ class _TrendPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final hasTrend = rate.hasTrend;
-    final color = rate.isUp ? AppColors.positiveGreen : AppColors.negativeRed;
 
     return Container(
       width: double.infinity,
@@ -986,31 +1364,25 @@ class _TrendPanel extends StatelessWidget {
         ),
       ),
       child: hasTrend
-          ? Row(
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Tendencia de la tasa',
-                        style: Theme.of(context).textTheme.labelMedium
-                            ?.copyWith(fontWeight: FontWeight.w900),
-                      ),
-                      const SizedBox(height: 6),
-                      MiniSparkline(
-                        values: rate.sparklineValues,
-                        color: color,
-                        height: 28,
-                      ),
-                    ],
+                Text(
+                  'Tendencia de la tasa',
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    fontWeight: FontWeight.w900,
                   ),
                 ),
-                const SizedBox(width: 12),
-                TrendIndicator(
-                  changePercent: rate.changePercent,
-                  isUp: rate.isUp,
-                  compact: true,
+
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TrendIndicator(
+                      changePercent: rate.changePercent,
+                      isUp: rate.isUp,
+                      compact: true,
+                    ),
+                  ],
                 ),
               ],
             )
@@ -1053,7 +1425,7 @@ class _ActionButtons extends StatelessWidget {
           child: OutlinedButton.icon(
             onPressed: onCopy,
             icon: const Icon(Icons.copy_rounded),
-            label: const Text('Copiar monto'),
+            label: const Text('Copiar'),
             style: OutlinedButton.styleFrom(
               foregroundColor: AppColors.positiveGreen,
               side: const BorderSide(color: AppColors.positiveGreen),
@@ -1100,7 +1472,7 @@ class _QuickAmounts extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         const gap = 8.0;
-        final itemWidth = (constraints.maxWidth - gap * 5) / 6;
+        final itemWidth = (constraints.maxWidth - gap * 5) / 5;
         return Wrap(
           spacing: gap,
           runSpacing: gap,
@@ -1233,7 +1605,6 @@ class _CurrencyMark extends StatelessWidget {
       ),
     );
   }
-
 }
 
 class _CalculatorSkeleton extends StatefulWidget {
