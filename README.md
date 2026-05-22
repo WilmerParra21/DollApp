@@ -9,7 +9,7 @@ DollApp es una aplicación móvil construida con Flutter para consultar tasas de
 - Incluye animaciones Lottie para dar una experiencia más inmersiva al momento de actualizar.
 - Ofrece mensajes de novedades, control de versión y manejo de permisos de instalación si es necesario.
 
-## Cómo funciona
+## ¿Cómo funciona?
 
 1. Al abrir la app, el usuario ve las tasas del día y la última actualización disponible.
 2. Si hay una versión nueva, se muestra un panel de actualización que explica la mejora y guía al usuario.
