@@ -36,7 +36,7 @@ class CalculatorScreen extends StatefulWidget {
 
 class _CalculatorScreenState extends State<CalculatorScreen> {
   final TextEditingController _amountController = TextEditingController(
-    text: '1',
+    text: '',
   );
   static const List<int> _quickAmounts = [5, 10, 20, 50, 100];
   late final ValueNotifier<ExchangeRateSnapshot?> _snapshotNotifier;
@@ -54,7 +54,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
 
   String _fromCode = '';
   String _toCode = '';
-  int _selectedQuickAmount = 1;
+  int _selectedQuickAmount = -1;
 
   @override
   void initState() {
@@ -195,7 +195,43 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
   }
 
   double get _amount {
-    return double.tryParse(_amountController.text.replaceAll(',', '.')) ?? 0;
+    final text = _normalizedAmountText(_amountController.text);
+    if (text.isEmpty) {
+      return 1;
+    }
+    return double.tryParse(text) ?? 0;
+  }
+
+  String _normalizedAmountText(String value) {
+    final cleaned = value.trim().replaceAll(' ', '');
+    if (cleaned.isEmpty) {
+      return '';
+    }
+
+    final hasComma = cleaned.contains(',');
+    final hasDot = cleaned.contains('.');
+
+    if (hasComma && hasDot) {
+      return cleaned.replaceAll('.', '').replaceAll(',', '.');
+    }
+
+    if (hasComma && !hasDot) {
+      return cleaned.replaceAll(',', '.');
+    }
+
+    if (hasDot && !hasComma) {
+      final dotCount = '.'.allMatches(cleaned).length;
+      if (dotCount > 1) {
+        return cleaned.replaceAll('.', '');
+      }
+
+      final lastDotIndex = cleaned.lastIndexOf('.');
+      if (cleaned.length - lastDotIndex - 1 == 3) {
+        return cleaned.replaceAll('.', '');
+      }
+    }
+
+    return cleaned;
   }
 
   void _applyRouteDirectionOnce(ExchangeRateSnapshot snapshot) {
@@ -709,11 +745,9 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
 
   void _clear() {
     setState(() {
-      _selectedQuickAmount = 1;
-      _amountController.text = '1';
-      _amountController.selection = TextSelection.fromPosition(
-        TextPosition(offset: _amountController.text.length),
-      );
+      _selectedQuickAmount = -1;
+      _amountController.clear();
+      _amountController.selection = const TextSelection.collapsed(offset: 0);
     });
   }
 

@@ -50,7 +50,7 @@ class AppVersionScreen extends StatelessWidget {
                               ClipRRect(
                                 borderRadius: BorderRadius.circular(24),
                                 child: Image.asset(
-                                  'assets/images/logo.png',
+                                  'assets/images/icon.jpg',
                                   width: 84,
                                   height: 84,
                                   fit: BoxFit.cover,
@@ -79,11 +79,11 @@ class AppVersionScreen extends StatelessWidget {
                     const SizedBox(height: 12),
                     VersionInfoCard(
                       children: const [
-                        _InfoRow(label: 'Versión', value: '1.0.4'),
+                        _InfoRow(label: 'Versión', value: '1.0.5'),
                         _InfoRow(label: 'Estado', value: 'Beta'),
                         _InfoRow(
                           label: 'Última actualización',
-                          value: '19/05/2026',
+                          value: '29/05/2026',
                         ),
                       ],
                     ),
