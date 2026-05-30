@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../../../../app/app_routes.dart';
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/utils/currency_formatter.dart';
+import '../../../../core/utils/no_consecutive_decimal_separator_formatter.dart';
 import '../../../../core/widgets/app_background.dart';
 import '../../../../core/widgets/trend_indicator.dart';
 import '../../data/http_exchange_rate_repository.dart';
@@ -1062,6 +1063,7 @@ class _AmountField extends StatelessWidget {
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
           inputFormatters: [
             FilteringTextInputFormatter.allow(RegExp(r'[0-9,.]')),
+            const NoConsecutiveDecimalSeparatorFormatter(),
           ],
           onChanged: (_) => onChanged(),
           style: Theme.of(context).textTheme.headlineMedium?.copyWith(
