@@ -79,11 +79,11 @@ class AppVersionScreen extends StatelessWidget {
                     const SizedBox(height: 12),
                     VersionInfoCard(
                       children: const [
-                        _InfoRow(label: 'Versión', value: '1.0.5'),
+                        _InfoRow(label: 'Versión', value: '1.0.6'),
                         _InfoRow(label: 'Estado', value: 'Beta'),
                         _InfoRow(
                           label: 'Última actualización',
-                          value: '29/05/2026',
+                          value: '06/08/2026',
                         ),
                       ],
                     ),
@@ -185,7 +185,7 @@ class AppVersionScreen extends StatelessWidget {
                     ),
                     const SizedBox(height: 22),
                     Text(
-                      '© 2026 DollApp. Todos los derechos reservados.',
+                      '© 2026 Devsparra. Todos los derechos reservados.',
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: colorScheme.onSurfaceVariant,

@@ -505,10 +505,164 @@ final refreshedSnapshot = await repository.getRates(forceRefresh: true);
         }),
       );
 
-      await expectLater(
-        repository.getRates(forceRefresh: true),
-        throwsA(isA<FormatException>()),
+       await expectLater(
+         repository.getRates(forceRefresh: true),
+         throwsA(isA<FormatException>()),
+       );
+     },
+   );
+
+  group('fetchHistoricalRate', () {
+    test('returns the historical rate value on success', () async {
+      final repository = HttpExchangeRateRepository(
+        client: MockClient((request) async {
+          expect(request.method, 'POST');
+          expect(request.url.path, '/functions/v1/tasas-historicos');
+
+          final body = jsonDecode(request.body);
+          expect(body['nombre'], 'Dolar BCV');
+          expect(body['fecha'], '2024-05-15');
+
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode({
+                'fecha': '2024-05-15',
+                'info': 'datos_desde_db',
+                'tasa': {
+                  'nombre': 'Dolar BCV',
+                  'moneda': 'Bs',
+                  'conver': 'usd',
+                  'simbolo': 'Bs',
+                  'monto': '36,58',
+                  'fechaActualizacion': '15/05/2024',
+                },
+              }),
+            ),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
       );
-    },
-  );
+
+      final value = await repository.fetchHistoricalRate(
+        nombre: 'Dolar BCV',
+        fecha: DateTime(2024, 5, 15),
+      );
+
+      expect(value, closeTo(36.58, 0.001));
+    });
+
+    test('throws FormatException on 400 with error message', () async {
+      final repository = HttpExchangeRateRepository(
+        client: MockClient((request) async {
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode({
+                'error': "El nombre 'Dólar Desconocido' no es válido.",
+              }),
+            ),
+            400,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+
+      await expectLater(
+        repository.fetchHistoricalRate(
+          nombre: 'Dólar Desconocido',
+          fecha: DateTime(2024, 5, 15),
+        ),
+        throwsA(
+          isA<FormatException>().having(
+            (e) => e.message,
+            'message',
+            "El nombre 'Dólar Desconocido' no es válido.",
+          ),
+        ),
+      );
+    });
+
+    test('throws FormatException on 404 with error message', () async {
+      final repository = HttpExchangeRateRepository(
+        client: MockClient((request) async {
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode({
+                'error': "No se encontró tasa para 'Dólar BCV' en la fecha 2020-01-01.",
+              }),
+            ),
+            404,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+
+      await expectLater(
+        repository.fetchHistoricalRate(
+          nombre: 'Dólar BCV',
+          fecha: DateTime(2020, 1, 1),
+        ),
+        throwsA(
+          isA<FormatException>().having(
+            (e) => e.message,
+            'message',
+            "No se encontró tasa para 'Dólar BCV' en la fecha 2020-01-01.",
+          ),
+        ),
+      );
+    });
+
+    test('throws FormatException when response has no tasa field', () async {
+      final repository = HttpExchangeRateRepository(
+        client: MockClient((request) async {
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode({
+                'fecha': '2024-05-15',
+                'info': 'datos_desde_db',
+              }),
+            ),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+
+      await expectLater(
+        repository.fetchHistoricalRate(
+          nombre: 'Dolar BCV',
+          fecha: DateTime(2024, 5, 15),
+        ),
+        throwsA(
+          isA<FormatException>().having(
+            (e) => e.message,
+            'message',
+            'No se encontró la tasa en la respuesta',
+          ),
+        ),
+      );
+    });
+
+    test('throws FormatException on server error without error body', () async {
+      final repository = HttpExchangeRateRepository(
+        client: MockClient((request) async {
+          return http.Response('Internal Server Error', 500);
+        }),
+      );
+
+      await expectLater(
+        repository.fetchHistoricalRate(
+          nombre: 'Dolar BCV',
+          fecha: DateTime(2024, 5, 15),
+        ),
+        throwsA(
+          isA<FormatException>().having(
+            (e) => e.message,
+            'message',
+            'Error al consultar tasa histórica (500)',
+          ),
+        ),
+      );
+    });
+  });
 }

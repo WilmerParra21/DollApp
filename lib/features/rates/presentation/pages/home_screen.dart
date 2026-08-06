@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../../../app/app_routes.dart';
 import '../../../../core/services/update_service.dart';
 import '../../../../core/widgets/app_background.dart';
+import '../../../../core/widgets/app_primary_button.dart';
 import '../../data/http_exchange_rate_repository.dart';
 import '../../data/pinned_conversion_store.dart';
 import '../../models/exchange_rate_snapshot.dart';
@@ -286,82 +287,88 @@ class _HomeScreenState extends State<HomeScreen> {
             onRefresh: _refreshRates,
             child: NotificationListener<ScrollNotification>(
               onNotification: _handleScrollNotification,
-              child: SingleChildScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(20, 14, 20, 28),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 620),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'DollApp',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .headlineMedium
-                                        ?.copyWith(
-                                          fontSize: 22,
-                                          fontWeight: FontWeight.w800,
-                                          letterSpacing: 0,
-                                        ),
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    'Tus tasas al día',
-                                    style: Theme.of(context).textTheme.bodyLarge
-                                        ?.copyWith(
-                                          color: colorScheme.onSurfaceVariant,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                  ),
-                                ],
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  return SingleChildScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.fromLTRB(20, 14, 20, 28),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minHeight: constraints.maxHeight,
+                        maxWidth: 620,
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'DollApp',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .headlineMedium
+                                          ?.copyWith(
+                                            fontSize: 22,
+                                            fontWeight: FontWeight.w800,
+                                            letterSpacing: 0,
+                                          ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      'Tus tasas al día',
+                                      style: Theme.of(context).textTheme.bodyLarge
+                                          ?.copyWith(
+                                            color: colorScheme.onSurfaceVariant,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                    ),
+                                  ],
+                                ),
                               ),
-                            ),
-                            _ThemeToggleButton(
-                              isDark: isDark,
-                              onTap: widget.onToggleTheme,
-                            ),
-                            const SizedBox(width: 10),
-                            _HeaderIconButton(
-                              tooltip: 'Acerca de',
-                              icon: Icons.info_outline_rounded,
-                              onTap: () =>
-                                  Navigator.pushNamed(context, AppRoutes.about),
-                            ),
-                          ],
-                        ),
-                        ValueListenableBuilder<ExchangeRateSnapshot?>(
-                          valueListenable: _snapshotNotifier,
-                          builder: (context, snapshot, child) {
-                            if (snapshot == null) {
-                              if (_loadFailed) {
-                                return _HomeConnectionProblem(
-                                  onRetry: _loadInitialData,
-                                  showOfflineMessage: _offlineWithoutData,
-                                );
+                              _ThemeToggleButton(
+                                isDark: isDark,
+                                onTap: widget.onToggleTheme,
+                              ),
+                              const SizedBox(width: 10),
+                              _HeaderIconButton(
+                                tooltip: 'Acerca de',
+                                icon: Icons.info_outline_rounded,
+                                onTap: () =>
+                                    Navigator.pushNamed(context, AppRoutes.about),
+                              ),
+                            ],
+                          ),
+                          ValueListenableBuilder<ExchangeRateSnapshot?>(
+                            valueListenable: _snapshotNotifier,
+                            builder: (context, snapshot, child) {
+                              if (snapshot == null) {
+                                if (_loadFailed) {
+                                  return _HomeConnectionProblem(
+                                    onRetry: _loadInitialData,
+                                    showOfflineMessage: _offlineWithoutData,
+                                  );
+                                }
+                                return const _HomeSkeleton();
                               }
-                              return const _HomeSkeleton();
-                            }
 
-                            return _HomeContent(
-                              ratesSnapshot: snapshot,
-                              isRefreshing: _isRefreshing,
-                              showOfflineWarning:
-                                  _loadFailed && snapshot.usedFallback,
-                            );
-                          },
-                        ),
-                      ],
+                              return _HomeContent(
+                                ratesSnapshot: snapshot,
+                                isRefreshing: _isRefreshing,
+                                showOfflineWarning:
+                                    _loadFailed && snapshot.usedFallback,
+                              );
+                            },
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                ),
+                  );
+                },
               ),
             ),
           ),
@@ -408,6 +415,7 @@ class _HomeContent extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Column(
+      mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 22),
@@ -455,11 +463,11 @@ class _HomeContent extends StatelessWidget {
               isFavorite: rate.isFavorite,
               onFavoriteTap: () async {
                 final nextIsFavorite = !rate.isFavorite;
-                if (nextIsFavorite && favoriteCount >= 2 && !rate.isFavorite) {
+                if (nextIsFavorite && favoriteCount >= 3 && !rate.isFavorite) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
                       content: Text(
-                        'Solo puedes tener 2 conversiones en favoritos.',
+                        'Solo puedes tener 3 conversiones en favoritos.',
                       ),
                     ),
                   );
@@ -498,13 +506,12 @@ class _HomeContent extends StatelessWidget {
             ),
           );
         }),
-        /*    const SizedBox(height: 10),
+        const SizedBox(height: 10),
         AppPrimaryButton(
           label: 'Calcular',
           icon: Icons.calculate_rounded,
           onPressed: () => Navigator.pushNamed(context, AppRoutes.calculator),
         ),
-    */
         const SizedBox(height: 14),
         _BottomRefreshHint(isRefreshing: isRefreshing),
       ],
@@ -596,57 +603,72 @@ class _HomeSkeletonState extends State<_HomeSkeleton>
       builder: (context, child) {
         return _SkeletonTheme(progress: _controller.value, child: child!);
       },
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const SizedBox(height: 22),
-          const _StatusSkeletonCard(),
-          const SizedBox(height: 24),
-          const _SkeletonBlock(width: 138, height: 24, borderRadius: 12),
-          const SizedBox(height: 12),
-          ...List.generate(
-            3,
-            (index) => const Padding(
-              padding: EdgeInsets.only(bottom: 12),
-              child: _RateSkeletonCard(),
-            ),
-          ),
-          const SizedBox(height: 10),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final useColumns = constraints.maxWidth < 420;
-              const primary = _SkeletonBlock(height: 54, borderRadius: 16);
-              const secondary = _SkeletonBlock(height: 54, borderRadius: 16);
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          return SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(0, 22, 0, 28),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: constraints.maxHeight),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const _StatusSkeletonCard(),
+                  const SizedBox(height: 24),
+                  const _SkeletonBlock(width: 138, height: 24, borderRadius: 12),
+                  const SizedBox(height: 12),
+                  ...List.generate(
+                    3,
+                    (index) => const Padding(
+                      padding: EdgeInsets.only(bottom: 12),
+                      child: _RateSkeletonCard(),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      final useColumns = constraints.maxWidth < 420;
+                      const primary = _SkeletonBlock(height: 54, borderRadius: 16);
+                      const secondary = _SkeletonBlock(height: 54, borderRadius: 16);
 
-              return useColumns
-                  ? const Column(
-                      children: [primary, SizedBox(height: 12), secondary],
-                    )
-                  : const Row(
-                      children: [
-                        Expanded(child: primary),
-                        SizedBox(width: 12),
-                        Expanded(child: secondary),
-                      ],
-                    );
-            },
-          ),
-          const SizedBox(height: 28),
-          const _SkeletonBlock(width: 168, height: 20, borderRadius: 10),
-          const SizedBox(height: 10),
-          const SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                _SkeletonBlock(width: 108, height: 44, borderRadius: 999),
-                SizedBox(width: 10),
-                _SkeletonBlock(width: 104, height: 44, borderRadius: 999),
-                SizedBox(width: 10),
-                _SkeletonBlock(width: 108, height: 44, borderRadius: 999),
-              ],
+                      return useColumns
+                          ? const Column(
+                              children: [primary, SizedBox(height: 12), secondary],
+                            )
+                          : const Row(
+                              children: [
+                                Expanded(child: primary),
+                                SizedBox(width: 12),
+                                Expanded(child: secondary),
+                              ],
+                            );
+                    },
+                  ),
+                  const SizedBox(height: 28),
+                  const _SkeletonBlock(width: 168, height: 20, borderRadius: 10),
+                  const SizedBox(height: 10),
+                  const SizedBox(
+                    height: 44,
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      physics: NeverScrollableScrollPhysics(),
+                      child: Row(
+                        children: [
+                          _SkeletonBlock(width: 108, height: 44, borderRadius: 999),
+                          SizedBox(width: 10),
+                          _SkeletonBlock(width: 104, height: 44, borderRadius: 999),
+                          SizedBox(width: 10),
+                          _SkeletonBlock(width: 108, height: 44, borderRadius: 999),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
+          );
+        },
       ),
     );
   }

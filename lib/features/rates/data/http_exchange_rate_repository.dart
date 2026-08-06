@@ -240,7 +240,7 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
       (rate) => rate.id == id && rate.isFavorite,
     );
     final favoriteCount = snapshot.rates.where((rate) => rate.isFavorite).length;
-    if (isFavorite && !alreadyFavorite && favoriteCount >= 2) {
+    if (isFavorite && !alreadyFavorite && favoriteCount >= 3) {
       return;
     }
 
@@ -329,7 +329,7 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
     final response = await _client
         .get(uri, headers: _supabaseHeaders())
         .timeout(const Duration(seconds: 12));
-     //  print("Tasas: ${response.body}");
+    
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw FormatException('Supabase respondio ${response.statusCode}');
     }
@@ -441,6 +441,68 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
 
       return const {};
     }
+  }
+
+  Future<double> fetchHistoricalRate({
+    required String nombre,
+    required DateTime fecha,
+  }) async {
+    if (AppConfig.supabaseAnonKey.isEmpty) {
+      throw const FormatException('Falta configurar SUPABASE_ANON_KEY');
+    }
+
+    final uri = Uri.https(
+      '${AppConfig.supabaseProjectRef}.supabase.co',
+      '/functions/v1/tasas-historicos',
+    );
+
+    final formattedDate =
+        '${fecha.year}-${fecha.month.toString().padLeft(2, '0')}-${fecha.day.toString().padLeft(2, '0')}';
+
+    final body = jsonEncode({
+      'nombre': nombre,
+      'fecha': formattedDate,
+    });
+
+    final response = await _client
+        .post(uri, headers: _supabaseHeaders(), body: body)
+        .timeout(const Duration(seconds: 15));
+
+    if (response.statusCode != 200) {
+      String message =
+          'Error al consultar tasa histórica (${response.statusCode})';
+      try {
+        final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+        if (decoded is Map<String, dynamic> &&
+            decoded['error'] != null) {
+          message = decoded['error'] as String;
+        }
+      } catch (_) {}
+      throw FormatException(message);
+    }
+
+    final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+    if (decoded is! Map<String, dynamic>) {
+      throw const FormatException(
+        'Respuesta de tasa histórica inválida',
+      );
+    }
+
+    final tasa = decoded['tasa'];
+    if (tasa is! Map<String, dynamic>) {
+      throw const FormatException(
+        'No se encontró la tasa en la respuesta',
+      );
+    }
+
+    final value = _tryParseNumber(tasa['monto']);
+    if (value == null || value <= 0) {
+      throw const FormatException(
+        'No hay tasa disponible para la fecha seleccionada.',
+      );
+    }
+
+    return value;
   }
 
   Map<String, dynamic> _serializeHistories(

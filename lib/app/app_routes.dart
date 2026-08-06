@@ -35,6 +35,7 @@ class AppRoutes {
           closeAppOnBack: settings.arguments is CalculatorRouteArgs
               ? (settings.arguments! as CalculatorRouteArgs).closeAppOnBack
               : false,
+          onToggleTheme: onToggleTheme,
         ),
         about => const AppVersionScreen(),
         _ => HomeScreen(

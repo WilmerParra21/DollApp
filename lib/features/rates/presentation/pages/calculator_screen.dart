@@ -22,6 +22,7 @@ class CalculatorScreen extends StatefulWidget {
     this.initialFromCode,
     this.initialToCode,
     this.closeAppOnBack = false,
+    this.onToggleTheme,
     super.key,
   });
 
@@ -30,6 +31,7 @@ class CalculatorScreen extends StatefulWidget {
   final String? initialFromCode;
   final String? initialToCode;
   final bool closeAppOnBack;
+  final VoidCallback? onToggleTheme;
 
   @override
   State<CalculatorScreen> createState() => _CalculatorScreenState();
@@ -52,6 +54,9 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
   bool _isRefreshing = false;
   bool _isPinned = false;
   bool _offlineNoData = false;
+  bool _isFetchingHistoricalRate = false;
+  final Map<String, DateTime> _selectedHistoricalDateByRate = {};
+  final Map<String, double> _historicalRateValuesByRate = {};
 
   String _fromCode = '';
   String _toCode = '';
@@ -339,7 +344,19 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       return double.nan;
     }
     try {
-      return _activeQuote!.convert(_amount, _fromCode, _toCode);
+      final historicalValue =
+          _historicalRateValuesByRate[_activeQuote!.row.id];
+      final unitsPerAnchor =
+          (historicalValue != null && historicalValue > 0)
+              ? historicalValue
+              : _activeQuote!.unitsPerAnchor;
+      final quote = ParsedQuote(
+        row: _activeQuote!.row,
+        anchor: _activeQuote!.anchor,
+        counter: _activeQuote!.counter,
+        unitsPerAnchor: unitsPerAnchor,
+      );
+      return quote.convert(_amount, _fromCode, _toCode);
     } on ArgumentError {
       return double.nan;
     }
@@ -362,7 +379,13 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       return 'No hay tasa cargada para este par.';
     }
 
-    final n = quote.unitsPerAnchor;
+    final historicalValue = _historicalRateValuesByRate[rate.id];
+    final selectedDate = _selectedHistoricalDateByRate[rate.id];
+    final usingHistorical = historicalValue != null &&
+        historicalValue > 0 &&
+        selectedDate != null;
+
+    final n = usingHistorical ? historicalValue : quote.unitsPerAnchor;
     if (!n.isFinite || n <= 0) {
       return 'No hay tasa cargada para este par.';
     }
@@ -370,11 +393,16 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
     final reciprocal = 1.0 / n;
     final conversionLabel = ' (${quote.anchor}/${quote.counter})';
 
-    // Misma formula que usa el resultado: identica al boton invertir (x o / por N).
     final direct =
         '1 ${quote.anchor} = ${CurrencyFormatter.moneyRate(n, quote.counter)}';
     final reciprocalLine =
         '1 ${quote.counter} = ${CurrencyFormatter.moneyRate(reciprocal, quote.anchor)}';
+
+    if (usingHistorical) {
+      return 'Tasa histórica · ${rate.name}$conversionLabel\n'
+          '$direct\n'
+          '$reciprocalLine';
+    }
 
     return 'Tasa usada · ${rate.name}$conversionLabel\n'
         '$direct\n'
@@ -412,6 +440,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
               widget.closeAppOnBack
                   ? Icons.menu_rounded
                   : Icons.arrow_back_rounded,
+                  size: 28,
             ),
             onPressed: () {
               if (widget.closeAppOnBack) {
@@ -426,102 +455,131 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
             },
           ),
           title: const Text('Calculadora'),
+          actions: [
+            IconButton(
+              tooltip: _resolvedRowForTrend() == null
+                  ? 'Fijar tasas de conversión al iniciar'
+                  : (_resolvedRowForTrend()!.isFavorite
+                      ? (_isPinned
+                          ? 'Desfijar conversión al iniciar'
+                          : 'Fijar conversión al iniciar')
+                      : 'Solo favoritas se pueden fijar'),
+              icon: Icon(
+                _isPinned ? Icons.push_pin_rounded : Icons.push_pin_outlined,
+              ),
+              onPressed: _showPinnedConversionSheet,
+            ),
+            if (widget.onToggleTheme != null)
+              IconButton(
+                tooltip: 'Cambiar tema',
+                icon: Icon(
+                  isDark ? Icons.dark_mode_rounded : Icons.light_mode_rounded,
+                ),
+                onPressed: widget.onToggleTheme,
+              ),
+          ],
         ),
         body: SafeArea(
           child: AppBackground(
-            child: SizedBox.expand(
-              child: ValueListenableBuilder<ExchangeRateSnapshot?>(
-                valueListenable: _snapshotNotifier,
-                builder: (context, snapshot, child) {
-                  final ratesSnapshot =
-                      snapshot ?? _currentSnapshot ?? _bootSnapshot;
-                  final isLoading = _isLoading && ratesSnapshot == null;
+          child: RefreshIndicator(
+            onRefresh: _refreshRates,
+            child: SingleChildScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              child: SizedBox(
+                height: MediaQuery.of(context).size.height -
+                    MediaQuery.of(context).padding.vertical,
+                child: ValueListenableBuilder<ExchangeRateSnapshot?>(
+                  valueListenable: _snapshotNotifier,
+                  builder: (context, snapshot, child) {
+                    final ratesSnapshot =
+                        snapshot ?? _currentSnapshot ?? _bootSnapshot;
+                    final isLoading = _isLoading && ratesSnapshot == null;
 
-                  if (isLoading) {
-                    return const _CalculatorSkeleton();
-                  }
+                    if (isLoading) {
+                      return const _CalculatorSkeleton();
+                    }
 
-                  if (ratesSnapshot == null) {
-                    return _QuoteLoadProblem(
-                      onRetry: _refreshRates,
-                      message: _offlineNoData
-                          ? 'No hay conexión y no hay datos guardados. Conecta a internet para descargar las tasas reales.'
-                          : 'No se pudo cargar la tasa para cotizar. Revisa tu conexión e intenta de nuevo.',
+                    if (ratesSnapshot == null) {
+                      return _QuoteLoadProblem(
+                        onRetry: _refreshRates,
+                        message: _offlineNoData
+                            ? 'No hay conexión y no hay datos guardados. Conecta a internet para descargar las tasas reales.'
+                            : 'No se pudo cargar la tasa para cotizar. Revisa tu conexión e intenta de nuevo.',
+                      );
+                    }
+
+                    if (_fixedQuoteInvalid) {
+                      return _InvalidFixedRateProblem(onRetry: _refreshRates);
+                    }
+
+                                    final rowForUi = _resolvedRowForTrend();
+                    if (_missingQuoteBinding ||
+                        rowForUi == null ||
+                        _activeQuote == null) {
+                      return _QuoteLoadProblem(
+                        onRetry: _refreshRates,
+                        message:
+                            'No se pudo cargar la tasa para cotizar. Revisa tu conexión e intenta de nuevo.',
+                      );
+                    }
+
+                    final currencyNames = _namesForCalculatorPair(ratesSnapshot);
+                    final currencyBadges = _badgesForCalculatorPair(
+                      ratesSnapshot,
                     );
-                  }
 
-                  if (_fixedQuoteInvalid) {
-                    return _InvalidFixedRateProblem(onRetry: _refreshRates);
-                  }
+                                    final favoriteRates = ratesSnapshot.rates
+                        .where((rate) => rate.isFavorite)
+                        .toList();
+                    final canPin = rowForUi.isFavorite;
+                    final hasFavoriteSelector =
+                        favoriteRates.length > 1 && rowForUi.isFavorite;
+                    final selectedHistoricalDate =
+                        _selectedHistoricalDateByRate[rowForUi.id];
 
-                  final rowForUi = _resolvedRowForTrend();
-                  if (_missingQuoteBinding ||
-                      rowForUi == null ||
-                      _activeQuote == null) {
-                    return _QuoteLoadProblem(
-                      onRetry: _refreshRates,
-                      message:
-                          'No se pudo cargar la tasa para cotizar. Revisa tu conexión e intenta de nuevo.',
+                    return _CalculatorContent(
+                      amountController: _amountController,
+                      quickAmounts: _quickAmounts,
+                      selectedQuickAmount: _selectedQuickAmount,
+                      fromCode: _fromCode,
+                      toCode: _toCode,
+                      currencyNames: currencyNames,
+                      currencyBadges: currencyBadges,
+                      selectedRate: rowForUi,
+                      amount: _amount,
+                      formattedResult: _formattedResult(),
+                      rateLabel: _formattedRateLabel(),
+                      selectedHistoricalDate: selectedHistoricalDate,
+                      isPinned: _isPinned,
+                      canPin: canPin,
+                      otherFavoriteLabel: null,
+                      onSwitchFavorite: hasFavoriteSelector
+                          ? () => _showFavoriteSelector(
+                              ratesSnapshot,
+                              rowForUi,
+                              favoriteRates,
+                            )
+                          : null,
+                      onAmountChanged: () =>
+                          setState(() => _selectedQuickAmount = -1),
+                      onClear: _clear,
+                      onCopy: _copyResult,
+                      onPickFrom: _noopPickHandler,
+                      onPickTo: _noopPickHandler,
+                      onSwap: () => _swapCurrencies(ratesSnapshot),
+                      onPinChanged: _togglePinnedConversion,
+                      onQuickAmount: _setQuickAmount,
+                      onRequestHistoricalDate: _requestHistoricalDate,
+                      isFetchingHistoricalRate: _isFetchingHistoricalRate,
                     );
-                  }
-
-                  final currencyNames = _namesForCalculatorPair(ratesSnapshot);
-                  final currencyBadges = _badgesForCalculatorPair(
-                    ratesSnapshot,
-                  );
-
-                  final favoriteRates = ratesSnapshot.rates
-                      .where((rate) => rate.isFavorite)
-                      .toList();
-                  final canPin = rowForUi.isFavorite;
-                  final otherFavoriteRate =
-                      favoriteRates.length == 2 && rowForUi.isFavorite
-                      ? favoriteRates.firstWhere(
-                          (rate) => rate.id != rowForUi.id,
-                        )
-                      : null;
-                  final otherFavoriteLabel = otherFavoriteRate == null
-                      ? null
-                      : _favoriteConversionLabel(otherFavoriteRate);
-
-                  return _CalculatorContent(
-                    amountController: _amountController,
-                    quickAmounts: _quickAmounts,
-                    selectedQuickAmount: _selectedQuickAmount,
-                    fromCode: _fromCode,
-                    toCode: _toCode,
-                    currencyNames: currencyNames,
-                    currencyBadges: currencyBadges,
-                    selectedRate: rowForUi,
-                    amount: _amount,
-                    formattedResult: _formattedResult(),
-                    rateLabel: _formattedRateLabel(),
-                    isPinned: _isPinned,
-                    canPin: canPin,
-                    otherFavoriteLabel: otherFavoriteLabel,
-                    onSwitchFavorite: otherFavoriteRate == null
-                        ? null
-                        : () => _switchToOtherFavorite(
-                            ratesSnapshot,
-                            otherFavoriteRate,
-                          ),
-                    onAmountChanged: () =>
-                        setState(() => _selectedQuickAmount = -1),
-                    onClear: _clear,
-                    onCopy: _copyResult,
-                    onPickFrom: _noopPickHandler,
-                    onPickTo: _noopPickHandler,
-                    onSwap: () => _swapCurrencies(ratesSnapshot),
-                    onPinChanged: _togglePinnedConversion,
-                    onQuickAmount: _setQuickAmount,
-                  );
-                },
+                  },
+                ),
               ),
             ),
           ),
         ),
       ),
-    );
+    ));
   }
 
   void _noopPickHandler() {}
@@ -726,14 +784,151 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
     _showSnackBar('Mostrando la otra conversión favorita.');
   }
 
-  String _favoriteConversionLabel(ExchangeRate otherFavorite) {
-    final parsed = tryParseQuote(otherFavorite);
-    if (parsed == null) {
-      return otherFavorite.code;
+  Future<void> _showPinnedConversionSheet() async {
+    final rate = _resolvedRowForTrend();
+    final canPin = rate?.isFavorite == true;
+    bool localPinned = _isPinned;
+
+    final selected = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurface
+                              .withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _PinnedConversionToggle(
+                      isPinned: localPinned,
+                      canPin: canPin,
+                      onChanged: (value) async {
+                        await _togglePinnedConversion(value);
+                        if (!mounted) return;
+                        localPinned = _isPinned;
+                        setModalState(() {});
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    if (selected != null) {
+      await _togglePinnedConversion(selected);
     }
-    final anchor = canonicalCurrencyCode(parsed.anchor);
-    final counter = canonicalCurrencyCode(parsed.counter);
-    return '$anchor / $counter';
+  }
+
+  Future<void> _showFavoriteSelector(
+    ExchangeRateSnapshot snapshot,
+    ExchangeRate currentRate,
+    List<ExchangeRate> favoriteRates,
+  ) async {
+    final selected = await showModalBottomSheet<ExchangeRate>(
+      context: context,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 12),
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .onSurface
+                      .withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Text(
+                  'Selecciona una favorita',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Text(
+                  'Elige otra conversión favorita para usarla en la calculadora.',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: favoriteRates.length,
+                  separatorBuilder: (_, _) => const Divider(height: 1),
+                  itemBuilder: (context, index) {
+                    final rate = favoriteRates[index];
+                    final parsed = tryParseQuote(rate);
+                    final label = parsed == null
+                        ? rate.code
+                        : '${canonicalCurrencyCode(parsed.anchor)} / ${canonicalCurrencyCode(parsed.counter)}';
+                    final isCurrent = rate.id == currentRate.id;
+                    return ListTile(
+                      title: Text(label),
+                      subtitle: Text(rate.name),
+                      leading: Icon(
+                        isCurrent
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_unchecked,
+                      ),
+                      enabled: !isCurrent,
+                      onTap: isCurrent ? null : () => Navigator.pop(context, rate),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (selected != null) {
+      await _switchToOtherFavorite(snapshot, selected);
+    }
   }
 
   void _maybeClearInvalidPinnedConversion(ExchangeRateSnapshot snapshot) {
@@ -749,6 +944,9 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       _selectedQuickAmount = -1;
       _amountController.clear();
       _amountController.selection = const TextSelection.collapsed(offset: 0);
+      _selectedHistoricalDateByRate.clear();
+      _historicalRateValuesByRate.clear();
+      _isFetchingHistoricalRate = false;
     });
   }
 
@@ -766,6 +964,75 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       ClipboardData(text: CurrencyFormatter.decimal(numeric)),
     );
     _showSnackBar('Resultado copiado');
+  }
+
+  String _historyDateLabel(DateTime date) {
+    final day = date.day.toString().padLeft(2, '0');
+    final month = date.month.toString().padLeft(2, '0');
+    return '$day/$month/${date.year}';
+  }
+
+  Future<void> _requestHistoricalDate(ExchangeRate rate) async {
+    final now = DateTime.now();
+    final initialDate = _selectedHistoricalDateByRate[rate.id] ?? now;
+
+    final pickedDate = await showDatePicker(
+      context: context,
+      locale: const Locale('es'),
+      initialDate: initialDate,
+      firstDate: DateTime(now.year - 5),
+      lastDate: now,
+      helpText: 'Selecciona la fecha de la tasa',
+    );
+
+    if (pickedDate == null) {
+      return;
+    }
+
+    await _selectHistoricalDate(rate, pickedDate);
+  }
+
+  Future<void> _selectHistoricalDate(
+    ExchangeRate rate,
+    DateTime pickedDate,
+  ) async {
+    setState(() {
+      _selectedHistoricalDateByRate[rate.id] = pickedDate;
+      _historicalRateValuesByRate.remove(rate.id);
+      _isFetchingHistoricalRate = true;
+    });
+
+    _showSnackBar('Consultando tasa histórica...');
+
+    try {
+      final historicalValue =
+          await HttpExchangeRateRepository.instance.fetchHistoricalRate(
+        nombre: rate.name,
+        fecha: pickedDate,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _historicalRateValuesByRate[rate.id] = historicalValue;
+        _isFetchingHistoricalRate = false;
+      });
+
+      _showSnackBar(
+        'Tasa histórica del ${_historyDateLabel(pickedDate)}: '
+        '${CurrencyFormatter.moneyRate(historicalValue, _toCode)}',
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _historicalRateValuesByRate.remove(rate.id);
+        _isFetchingHistoricalRate = false;
+      });
+
+      final message = error is FormatException
+          ? error.message
+          : 'No se pudo obtener la tasa histórica. Se usa la tasa actual.';
+      _showSnackBar(message);
+    }
   }
 
   void _showSnackBar(String message) {
@@ -856,6 +1123,7 @@ class _CalculatorContent extends StatelessWidget {
     required this.amount,
     required this.formattedResult,
     required this.rateLabel,
+    required this.selectedHistoricalDate,
     required this.isPinned,
     required this.canPin,
     this.otherFavoriteLabel,
@@ -868,6 +1136,8 @@ class _CalculatorContent extends StatelessWidget {
     required this.onSwap,
     required this.onPinChanged,
     required this.onQuickAmount,
+    required this.onRequestHistoricalDate,
+    required this.isFetchingHistoricalRate,
   });
 
   final TextEditingController amountController;
@@ -881,6 +1151,7 @@ class _CalculatorContent extends StatelessWidget {
   final double amount;
   final String formattedResult;
   final String rateLabel;
+  final DateTime? selectedHistoricalDate;
   final bool isPinned;
   final bool canPin;
   final String? otherFavoriteLabel;
@@ -893,6 +1164,8 @@ class _CalculatorContent extends StatelessWidget {
   final VoidCallback onSwap;
   final ValueChanged<bool> onPinChanged;
   final ValueChanged<int> onQuickAmount;
+  final ValueChanged<ExchangeRate> onRequestHistoricalDate;
+  final bool isFetchingHistoricalRate;
 
   @override
   Widget build(BuildContext context) {
@@ -904,75 +1177,73 @@ class _CalculatorContent extends StatelessWidget {
             : 0.0;
 
         return SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(18, 4, 18, 28),
-          child: Center(
-            child: ConstrainedBox(
-              constraints: BoxConstraints(maxWidth: 520, minHeight: minHeight),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _PinnedConversionToggle(
-                    isPinned: isPinned,
-                    canPin: canPin,
-                    onChanged: onPinChanged,
-                  ),
-                  if (onSwitchFavorite != null) ...[
-                    const SizedBox(height: 6),
-                    OutlinedButton.icon(
-                      onPressed: onSwitchFavorite,
-                      icon: const Icon(Icons.swap_horiz_rounded),
-                      label: Text(
-                        otherFavoriteLabel == null
-                            ? 'Cambiar favorita'
-                            : 'Cambiar favorita ($otherFavoriteLabel)',
-                      ),
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(18, 0, 18, 28),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: 520, minHeight: minHeight),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (onSwitchFavorite != null) ...[
+                  const SizedBox(height: 5),
+                  OutlinedButton.icon(
+                    onPressed: onSwitchFavorite,
+                    icon: const Icon(Icons.swap_horiz_rounded),
+                    label: Text(
+                      otherFavoriteLabel == null
+                          ? 'Cambiar tasa favorita'
+                          : 'Cambiar tasa favorita ($otherFavoriteLabel)',
+                      style: const TextStyle(fontSize: 14),
                     ),
-                  ],
-                  const SizedBox(height: 10),
-                  _AmountField(
-                    controller: amountController,
-                    onChanged: onAmountChanged,
-                    onClear: onClear,
-                    currency: currencyNames[fromCode]!,
-                  ),
-                  const SizedBox(height: 18),
-                  _CurrencyFlow(
-                    fromCode: fromCode,
-                    toCode: toCode,
-                    currencyNames: currencyNames,
-                    currencyBadges: currencyBadges,
-                    onPickFrom: onPickFrom,
-                    onPickTo: onPickTo,
-                    onSwap: onSwap,
-                  ),
-                  const SizedBox(height: 18),
-                  _ResultPanel(
-                    amount: amount,
-                    fromCode: fromCode,
-                    toCode: toCode,
-                    formattedResult: formattedResult,
-                    rateLabel: rateLabel,
-                    rate: selectedRate,
-                    onCopy: onCopy,
-                  ),
-                  const SizedBox(height: 12),
-                  _ActionButtons(onCopy: onCopy, onClear: onClear),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Montos rapidos',
-                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  _QuickAmounts(
-                    amounts: quickAmounts,
-                    selectedAmount: selectedQuickAmount,
-                    onAmountSelected: onQuickAmount,
                   ),
                 ],
-              ),
+                const SizedBox(height: 5),
+                _AmountField(
+                  controller: amountController,
+                  onChanged: onAmountChanged,
+                  onClear: onClear,
+                  currency: currencyNames[fromCode]!,
+                ),
+                const SizedBox(height: 18),
+                _CurrencyFlow(
+                  fromCode: fromCode,
+                  toCode: toCode,
+                  currencyNames: currencyNames,
+                  currencyBadges: currencyBadges,
+                  onPickFrom: onPickFrom,
+                  onPickTo: onPickTo,
+                  onSwap: onSwap,
+                ),
+                const SizedBox(height: 18),
+                _ResultPanel(
+                  amount: amount,
+                  fromCode: fromCode,
+                  toCode: toCode,
+                  formattedResult: formattedResult,
+                  rateLabel: rateLabel,
+                  selectedHistoricalDate: selectedHistoricalDate,
+                  rate: selectedRate,
+                  onCopy: onCopy,
+                  onRequestHistoricalDate: onRequestHistoricalDate,
+                  isFetchingHistoricalRate: isFetchingHistoricalRate,
+                ),
+                const SizedBox(height: 12),
+                _ActionButtons(onCopy: onCopy, onClear: onClear),
+                const SizedBox(height: 16),
+                Text(
+                  'Montos rápidos',
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                _QuickAmounts(
+                  amounts: quickAmounts,
+                  selectedAmount: selectedQuickAmount,
+                  onAmountSelected: onQuickAmount,
+                ),
+              ],
             ),
           ),
         );
@@ -1005,7 +1276,7 @@ class _PinnedConversionToggle extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Fijar conversión al iniciar.',
+                    'Fijar tasas de conversión al iniciar.',
                     style: Theme.of(context).textTheme.labelLarge?.copyWith(
                       fontWeight: FontWeight.w800,
                     ),
@@ -1066,9 +1337,9 @@ class _AmountField extends StatelessWidget {
             const NoConsecutiveDecimalSeparatorFormatter(),
           ],
           onChanged: (_) => onChanged(),
-          style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
             fontWeight: FontWeight.w600,
-            height: 1.1, // Ajuste ligero para alineación vertical
+            height: 1.1,
           ),
           decoration: InputDecoration(
             hintText: '0',
@@ -1101,7 +1372,7 @@ class _AmountField extends StatelessWidget {
                     currency,
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.primary,
-                      fontSize: 16,
+                      fontSize: 14,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
@@ -1279,16 +1550,28 @@ class _ResultPanel extends StatelessWidget {
     required this.toCode,
     required this.formattedResult,
     required this.rateLabel,
+    required this.selectedHistoricalDate,
     required this.rate,
-    required this.onCopy,
-  });
+     required this.onRequestHistoricalDate,
+     required this.isFetchingHistoricalRate,
+     required this.onCopy,
+   });
+
+  String _dateLabel(DateTime date) {
+    final day = date.day.toString().padLeft(2, '0');
+    final month = date.month.toString().padLeft(2, '0');
+    return '$day/$month/${date.year}';
+  }
 
   final double amount;
   final String fromCode;
   final String toCode;
   final String formattedResult;
   final String rateLabel;
+  final DateTime? selectedHistoricalDate;
   final ExchangeRate rate;
+  final ValueChanged<ExchangeRate> onRequestHistoricalDate;
+  final bool isFetchingHistoricalRate;
   final VoidCallback onCopy;
 
   @override
@@ -1308,57 +1591,102 @@ class _ResultPanel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Resultado',
-            style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: colorScheme.onSurfaceVariant,
-              fontWeight: FontWeight.w800,
-            ),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(
+                  'Resultado',
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+           
+               Flexible(
+                 child: Text(
+                   selectedHistoricalDate != null
+                       ? 'Tasa del ${_dateLabel(selectedHistoricalDate!)}'
+                       : 'Actualización de ${_dateLabel(rate.updatedAt)}',
+                   textAlign: TextAlign.right,
+                   maxLines: 2,
+                   overflow: TextOverflow.ellipsis,
+                   style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                     color: colorScheme.onSurfaceVariant,
+                     fontWeight: FontWeight.w700,
+                   ),
+                 ),
+               ),
+            ],
           ),
-          const SizedBox(height: 6),
-          Text(
-            '${CurrencyFormatter.moneyWithCode(amount, toCode)} a $fromCode',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: colorScheme.onSurfaceVariant,
-              fontWeight: FontWeight.w700,
-            ),
+          const SizedBox(height: 4),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(
+                child: Text(
+                  '${CurrencyFormatter.moneyWithCode(amount, toCode)} a $fromCode',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+           ],
           ),
           const SizedBox(height: 8),
-          InkWell(
-            onTap: onCopy,
-            borderRadius: BorderRadius.circular(8),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 4),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: FittedBox(
-                      fit: BoxFit.scaleDown,
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        formattedResult,
-                        maxLines: 1,
-                        style: Theme.of(context).textTheme.displaySmall
-                            ?.copyWith(
-                              color: AppColors.positiveGreen,
-                              fontSize: 26,
-                              fontWeight: FontWeight.w800,
-                              letterSpacing: 0,
-                            ),
-                      ),
+          Row(
+             mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                formattedResult,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.displaySmall?.copyWith(
+                      color: AppColors.positiveGreen,
+                      fontSize: 24,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0,
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  Icon(
-                    Icons.copy_rounded,
-                    color: colorScheme.onSurfaceVariant,
-                    size: 22,
-                  ),
-                ],
               ),
-            ),
+          Row(
+            children: [
+                   IconButton(
+                onPressed: onCopy,
+                icon: Icon(
+                  Icons.copy_rounded,
+                  color: colorScheme.onSurfaceVariant,
+                  size: 24,
+                ),
+                tooltip: 'Copiar resultado',
+              ),
+               IconButton(
+                 onPressed: () => onRequestHistoricalDate(rate),
+                 icon: isFetchingHistoricalRate
+                     ? SizedBox(
+                         width: 20,
+                         height: 20,
+                         child: CircularProgressIndicator(
+                           strokeWidth: 2,
+                           color: colorScheme.onSurfaceVariant,
+                         ),
+                       )
+                     : Icon(
+                         Icons.calendar_month_rounded,
+                         color: colorScheme.onSurfaceVariant,
+                         size: 24,
+                       ),
+                 tooltip: selectedHistoricalDate != null
+                     ? 'Cambiar fecha histórica'
+                     : 'Seleccionar fecha histórica',
+               ),
+          
+            ],
+          )
+            ],
           ),
           const SizedBox(height: 10),
           Divider(color: colorScheme.outlineVariant.withValues(alpha: .65)),
@@ -1380,7 +1708,9 @@ class _ResultPanel extends StatelessWidget {
 }
 
 class _TrendPanel extends StatelessWidget {
-  const _TrendPanel({required this.rate});
+  const _TrendPanel({
+    required this.rate,
+  });
 
   final ExchangeRate rate;
 
@@ -1399,30 +1729,28 @@ class _TrendPanel extends StatelessWidget {
           color: colorScheme.outlineVariant.withValues(alpha: .58),
         ),
       ),
-      child: hasTrend
-          ? Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Tendencia de la tasa',
-                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    TrendIndicator(
-                      changePercent: rate.changePercent,
-                      isUp: rate.isUp,
-                      compact: true,
-                    ),
-                  ],
-                ),
-              ],
-            )
-          : Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Tendencia de la tasa',
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+       
+          if (hasTrend)
+            Align(
+              alignment: Alignment.centerRight,
+              child: TrendIndicator(
+                changePercent: rate.changePercent,
+                isUp: rate.isUp,
+                compact: true,
+              ),
+            ),
+          if (!hasTrend) ...[
+            const SizedBox(height: 12),
+            Row(
               children: [
                 Icon(
                   Icons.history_rounded,
@@ -1441,6 +1769,9 @@ class _TrendPanel extends StatelessWidget {
                 ),
               ],
             ),
+          ],
+        ],
+      ),
     );
   }
 }
@@ -1594,7 +1925,7 @@ class _DetailLine extends StatelessWidget {
         Expanded(
           child: Text(
             text,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               color: colorScheme.onSurfaceVariant,
               fontWeight: FontWeight.w700,
             ),
