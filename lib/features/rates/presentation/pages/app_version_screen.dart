@@ -83,7 +83,7 @@ class AppVersionScreen extends StatelessWidget {
                         _InfoRow(label: 'Estado', value: 'Beta'),
                         _InfoRow(
                           label: 'Última actualización',
-                          value: '06/08/2026',
+                          value: '07/08/2026',
                         ),
                       ],
                     ),
@@ -169,7 +169,7 @@ class AppVersionScreen extends StatelessWidget {
                         const SizedBox(height: 12),
                         const _FeatureTile(
                           icon: Icons.trending_up_rounded,
-                          text: 'Consulta de tasas BCV, EUR, CNY y COP',
+                          text: 'Consulta de tasas BCV, EUR, CNY, COP y más.',
                         ),
                       
                         const _FeatureTile(

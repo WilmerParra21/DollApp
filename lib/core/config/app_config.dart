@@ -33,7 +33,24 @@ class AppConfig {
     return playStorePackageName.isNotEmpty || playStoreUrl.isNotEmpty;
   }
 
+  static UpdateChannel get updateChannel {
+    final value = _envValue('UPDATE_CHANNEL') ??
+        const String.fromEnvironment(
+          'UPDATE_CHANNEL',
+          defaultValue: 'play_store',
+        );
+    return switch (value.toLowerCase()) {
+      'apk' => UpdateChannel.apk,
+      _ => UpdateChannel.playStore,
+    };
+  }
+
   static String? _envValue(String key) {
     return dotenv.isInitialized ? dotenv.env[key] : null;
   }
+}
+
+enum UpdateChannel {
+  playStore,
+  apk,
 }

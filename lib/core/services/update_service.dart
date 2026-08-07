@@ -33,11 +33,13 @@ class UpdateService {
     final localVersionName = packageInfo.version;
 
     try {
+      final fields = AppConfig.updateChannel == UpdateChannel.apk
+          ? 'build_number, version_name, download_url, is_mandatory, news'
+          : 'build_number, version_name, is_mandatory, news';
+
       final data = await Supabase.instance.client
           .from('versions_dollap')
-          .select(
-            'build_number, version_name, download_url, is_mandatory, news',
-          )
+          .select(fields)
           .order('build_number', ascending: false)
           .limit(1)
           .maybeSingle();
@@ -49,10 +51,9 @@ class UpdateService {
       final remoteVersion = UpdateInfo.fromJson(data);
 
       final noUpdateNeeded =
-          remoteVersion.downloadUrl.isEmpty ||
-          (remoteVersion.buildNumber > 0
+          remoteVersion.buildNumber > 0
               ? remoteVersion.buildNumber <= localBuildNumber
-              : remoteVersion.versionName == localVersionName);
+              : remoteVersion.versionName == localVersionName;
 
       if (noUpdateNeeded) {
         return null;
@@ -70,69 +71,6 @@ class UpdateService {
         },
       );
       return null;
-    }
-  }
-
-  Future<File> downloadApk(
-    String downloadUrl,
-    void Function(double progress) onProgress, {
-    CancelToken? cancelToken,
-  }) async {
-    final directory = await getTemporaryDirectory();
-    final apkFile = File('${directory.path}/dollapp_update.apk');
-
-    if (await apkFile.exists()) {
-      await apkFile.delete();
-    }
-
-    await _dio.download(
-      downloadUrl,
-      apkFile.path,
-      onReceiveProgress: (received, total) {
-        if (total > 0) {
-          onProgress(received / total);
-        }
-      },
-      options: Options(responseType: ResponseType.bytes, followRedirects: true),
-      cancelToken: cancelToken,
-    );
-
-    return apkFile;
-  }
-
-  Future<void> installApk(File apkFile) async {
-    try {
-      final result = await OpenFile.open(apkFile.path);
-      if (result.type != ResultType.done) {
-        final errorMessage = result.message;
-        if (errorMessage.contains('REQUEST_INSTALL_PACKAGES') ||
-            errorMessage.contains('Permission denied')) {
-          throw InstallPermissionDeniedException(errorMessage);
-        }
-        throw Exception('No se pudo abrir el instalador: $errorMessage');
-      }
-    } catch (error, stackTrace) {
-      final message = error.toString();
-      final isPermissionError =
-          message.contains('REQUEST_INSTALL_PACKAGES') ||
-          message.contains('Permission denied');
-
-      await _logAudit(
-        accion: isPermissionError
-            ? 'UPDATE_INSTALL_PERMISSION_DENIED'
-            : 'UPDATE_INSTALL_FAILED',
-        mensaje: message,
-        codigo: error.runtimeType.toString(),
-        metadatos: {
-          'apkPath': apkFile.path,
-          'stackTrace': stackTrace.toString(),
-        },
-      );
-
-      if (isPermissionError) {
-        throw InstallPermissionDeniedException(message);
-      }
-      rethrow;
     }
   }
 
@@ -198,6 +136,69 @@ class UpdateService {
       return response.statusCode == 200;
     } catch (_) {
       return false;
+    }
+  }
+
+  Future<File> downloadApk(
+    String downloadUrl,
+    void Function(double progress) onProgress, {
+    CancelToken? cancelToken,
+  }) async {
+    final directory = await getTemporaryDirectory();
+    final apkFile = File('${directory.path}/dollapp_update.apk');
+
+    if (await apkFile.exists()) {
+      await apkFile.delete();
+    }
+
+    await _dio.download(
+      downloadUrl,
+      apkFile.path,
+      onReceiveProgress: (received, total) {
+        if (total > 0) {
+          onProgress(received / total);
+        }
+      },
+      options: Options(responseType: ResponseType.bytes, followRedirects: true),
+      cancelToken: cancelToken,
+    );
+
+    return apkFile;
+  }
+
+  Future<void> installApk(File apkFile) async {
+    try {
+      final result = await OpenFile.open(apkFile.path);
+      if (result.type != ResultType.done) {
+        final errorMessage = result.message;
+        if (errorMessage.contains('REQUEST_INSTALL_PACKAGES') ||
+            errorMessage.contains('Permission denied')) {
+          throw InstallPermissionDeniedException(errorMessage);
+        }
+        throw Exception('No se pudo abrir el instalador: $errorMessage');
+      }
+    } catch (error, stackTrace) {
+      final message = error.toString();
+      final isPermissionError =
+          message.contains('REQUEST_INSTALL_PACKAGES') ||
+          message.contains('Permission denied');
+
+      await _logAudit(
+        accion: isPermissionError
+            ? 'UPDATE_INSTALL_PERMISSION_DENIED'
+            : 'UPDATE_INSTALL_FAILED',
+        mensaje: message,
+        codigo: error.runtimeType.toString(),
+        metadatos: {
+          'apkPath': apkFile.path,
+          'stackTrace': stackTrace.toString(),
+        },
+      );
+
+      if (isPermissionError) {
+        throw InstallPermissionDeniedException(message);
+      }
+      rethrow;
     }
   }
 

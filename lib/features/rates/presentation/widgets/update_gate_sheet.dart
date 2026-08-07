@@ -1,3 +1,4 @@
+import 'package:dollapp/core/config/app_config.dart';
 import 'package:dollapp/core/models/audit_log.dart';
 import 'package:dollapp/core/services/audit_service.dart';
 import 'package:flutter/material.dart';
@@ -36,44 +37,57 @@ class _UpdateGateContent extends StatefulWidget {
 }
 
 class _UpdateGateContentState extends State<_UpdateGateContent> {
-  double _progress = 0;
   bool _isDownloading = false;
+  double _progress = 0;
   bool _installPermissionDenied = false;
   String? _errorMessage;
   bool _isInstalled = false;
-  bool _playStoreAvailable = false;
-  bool _playStoreChecked = false;
+  bool _resolved = false;
 
   @override
   void initState() {
     super.initState();
-    _resolvePlayStoreAvailability();
+    _resolveUpdate();
   }
 
-  Future<void> _resolvePlayStoreAvailability() async {
-    if (!UpdateService.instance.hasPlayStoreLink) {
+  Future<void> _resolveUpdate() async {
+    if (_resolved) return;
+    _resolved = true;
+
+    await Future.delayed(const Duration(seconds: 2));
+
+    if (!mounted) return;
+
+    if (AppConfig.updateChannel == UpdateChannel.apk) {
+      await _startApkUpdate();
+    } else {
+      await _openPlayStore();
+    }
+  }
+
+  Future<void> _startApkUpdate() async {
+    if (widget.updateInfo.downloadUrl.isEmpty) {
       setState(() {
-        _playStoreChecked = true;
-        _playStoreAvailable = false;
+        _errorMessage = 'No hay una descarga disponible para esta versión.';
       });
       return;
     }
 
-    final available = await UpdateService.instance.isPlayStoreAvailable();
-    if (!mounted) return;
+    final canInstall = await UpdateService.instance.canInstallFromUnknownSources();
+    if (!canInstall) {
+      setState(() {
+        _installPermissionDenied = true;
+        _errorMessage =
+            'DollApp necesita permiso para instalar apps desconocidas antes de descargar la actualización.';
+      });
+      return;
+    }
 
     setState(() {
-      _playStoreChecked = true;
-      _playStoreAvailable = available;
-    });
-  }
-
-  Future<void> _startDownload() async {
-    setState(() {
-      _errorMessage = null;
-      _installPermissionDenied = false;
       _isDownloading = true;
       _progress = 0;
+      _errorMessage = null;
+      _installPermissionDenied = false;
     });
 
     try {
@@ -91,6 +105,7 @@ class _UpdateGateContentState extends State<_UpdateGateContent> {
 
       setState(() {
         _isInstalled = true;
+        _isDownloading = false;
       });
     } catch (error) {
       Future.microtask(() async {
@@ -141,37 +156,7 @@ class _UpdateGateContentState extends State<_UpdateGateContent> {
           );
         } catch (_) {}
       });
-      if (!mounted) return;
-      setState(() {
-        _errorMessage =
-            'No se pudo abrir Play Store. Intenta nuevamente más tarde.';
-      });
     }
-  }
-
-  Future<void> _startUpdate() async {
-    if (UpdateService.instance.hasPlayStoreLink && !_playStoreChecked) {
-      await _resolvePlayStoreAvailability();
-    }
-
-    if (_playStoreAvailable) {
-      await _openPlayStore();
-      return;
-    }
-
-    final canInstall = await UpdateService.instance
-        .canInstallFromUnknownSources();
-    if (!canInstall) {
-      if (!mounted) return;
-      setState(() {
-        _installPermissionDenied = true;
-        _errorMessage =
-            'DollApp necesita permiso para instalar apps desconocidas antes de descargar la actualización.';
-      });
-      return;
-    }
-
-    await _startDownload();
   }
 
   Future<void> _openInstallUnknownAppsSettings() async {
@@ -190,7 +175,6 @@ class _UpdateGateContentState extends State<_UpdateGateContent> {
           );
         } catch (_) {}
       });
-      // Error al abrir ajustes de instalación
     }
   }
 
@@ -212,6 +196,7 @@ class _UpdateGateContentState extends State<_UpdateGateContent> {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
+    final isApk = AppConfig.updateChannel == UpdateChannel.apk;
 
     return SafeArea(
       top: false,
@@ -304,7 +289,7 @@ class _UpdateGateContentState extends State<_UpdateGateContent> {
               ),
             ),
             const SizedBox(height: 20),
-            if (_isDownloading) ...[
+            if (isApk && _isDownloading) ...[
               LinearProgressIndicator(value: _progress),
               const SizedBox(height: 10),
               Text(
@@ -315,20 +300,17 @@ class _UpdateGateContentState extends State<_UpdateGateContent> {
               ),
             ] else ...[
               ElevatedButton(
-                onPressed:
-                    (_playStoreChecked ||
-                        !UpdateService.instance.hasPlayStoreLink)
-                    ? _startUpdate
+                onPressed: _resolved
+                    ? (isApk ? _startApkUpdate : _openPlayStore)
                     : null,
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   child: Text(
-                    !_playStoreChecked &&
-                            UpdateService.instance.hasPlayStoreLink
-                        ? 'Verificando Play Store...'
-                        : _playStoreAvailable
-                        ? 'Abrir Play Store'
-                        : 'Actualizar ahora',
+                    !_resolved
+                        ? 'Verificando...'
+                        : isApk
+                            ? 'Descargar actualización'
+                            : 'Actualizar ahora',
                   ),
                 ),
               ),
@@ -380,6 +362,7 @@ class _UpdateGateContentState extends State<_UpdateGateContent> {
                 'Esta actualización es obligatoria. Debes instalarla para seguir usando DollApp.',
                 style: textTheme.bodySmall?.copyWith(
                   color: colorScheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
           ],

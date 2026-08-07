@@ -1,5 +1,5 @@
 name: dollapp
-description: "Tasas del día."
+description: "DollApp es tu herramienta para consultar tasas de cambio del Banco Central de Venezuela y otras monedas. Convierte divisas al instante, guarda tus favoritos y accede al historial de tasas pasadas. Todo con una interfaz clara, modo oscuro y funcionamiento offline."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
