@@ -28,6 +28,7 @@ Future<void> main() async {
         url: 'https://${AppConfig.supabaseProjectRef}.supabase.co',
         anonKey: AppConfig.supabaseAnonKey,
       );
+      await AuditService.instance.markSupabaseReady();
 
       runApp(const DollApp());
     },

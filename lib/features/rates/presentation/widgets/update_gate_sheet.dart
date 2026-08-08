@@ -3,7 +3,6 @@ import 'package:dollapp/core/models/audit_log.dart';
 import 'package:dollapp/core/services/audit_service.dart';
 import 'package:flutter/material.dart';
 import 'package:lottie/lottie.dart';
-
 import '../../../../core/services/update_service.dart';
 
 Future<void> showUpdateGateSheet(BuildContext context, UpdateInfo updateInfo) {

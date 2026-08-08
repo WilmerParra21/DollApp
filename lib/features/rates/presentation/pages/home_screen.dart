@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import '../../../../app/app_routes.dart';
 import '../../../../core/services/update_service.dart';
 import '../../../../core/widgets/app_background.dart';
-import '../../../../core/widgets/app_primary_button.dart';
 import '../../data/http_exchange_rate_repository.dart';
 import '../../data/pinned_conversion_store.dart';
 import '../../models/exchange_rate_snapshot.dart';
@@ -506,12 +505,6 @@ class _HomeContent extends StatelessWidget {
             ),
           );
         }),
-        const SizedBox(height: 10),
-        AppPrimaryButton(
-          label: 'Calcular',
-          icon: Icons.calculate_rounded,
-          onPressed: () => Navigator.pushNamed(context, AppRoutes.calculator),
-        ),
         const SizedBox(height: 14),
         _BottomRefreshHint(isRefreshing: isRefreshing),
       ],

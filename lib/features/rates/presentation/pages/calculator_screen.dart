@@ -481,13 +481,10 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
         ),
         body: SafeArea(
           child: AppBackground(
-          child: RefreshIndicator(
-            onRefresh: _refreshRates,
-            child: SingleChildScrollView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              child: SizedBox(
-                height: MediaQuery.of(context).size.height -
-                    MediaQuery.of(context).padding.vertical,
+            child: RefreshIndicator(
+              onRefresh: _refreshRates,
+              child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
                 child: ValueListenableBuilder<ExchangeRateSnapshot?>(
                   valueListenable: _snapshotNotifier,
                   builder: (context, snapshot, child) {
@@ -512,7 +509,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
                       return _InvalidFixedRateProblem(onRetry: _refreshRates);
                     }
 
-                                    final rowForUi = _resolvedRowForTrend();
+                    final rowForUi = _resolvedRowForTrend();
                     if (_missingQuoteBinding ||
                         rowForUi == null ||
                         _activeQuote == null) {
@@ -528,7 +525,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
                       ratesSnapshot,
                     );
 
-                                    final favoriteRates = ratesSnapshot.rates
+                    final favoriteRates = ratesSnapshot.rates
                         .where((rate) => rate.isFavorite)
                         .toList();
                     final canPin = rowForUi.isFavorite;
@@ -579,7 +576,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
           ),
         ),
       ),
-    ));
+    );
   }
 
   void _noopPickHandler() {}
@@ -710,18 +707,44 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       _fromCode,
       _toCode,
     }.map((c) => canonicalCurrencyCode(c)).toSet()) {
-      final matchingRate = snapshot.rates.firstWhere(
-        (r) =>
-            r.displayCurrencyCode?.toUpperCase() == code.toUpperCase() ||
-            r.code.toUpperCase() == code.toUpperCase(),
-        orElse: () => snapshot.rates.firstWhere(
-          (r) => r.conversionCode?.toUpperCase() == code.toUpperCase(),
-          orElse: () => snapshot.rates.first,
-        ),
-      );
-      badges[code] = matchingRate.symbol;
+      badges[code] = _symbolForCurrencyCode(snapshot, code);
     }
     return badges;
+  }
+
+  String _symbolForCurrencyCode(
+    ExchangeRateSnapshot snapshot,
+    String rawCode,
+  ) {
+    final code = canonicalCurrencyCode(rawCode);
+
+    // El sÃ­mbolo de una fila representa la moneda de la tasa. Solo usar
+    // coincidencias directas evita asignar, por ejemplo, el sÃ­mbolo EUR a
+    // VES cuando VES solo aparece como moneda de destino.
+    for (final rate in snapshot.rates) {
+      final matchesDirectCode = [
+        rate.code,
+        rate.conversionCode,
+      ].any((value) => value != null && canonicalCurrencyCode(value) == code);
+      if (matchesDirectCode && rate.symbol.trim().isNotEmpty) {
+        return rate.symbol.trim();
+      }
+    }
+
+    // En fuentes planas puede no existir conversionCode; en ese caso,
+    // displayCurrencyCode es la Ãºnica identificaciÃ³n disponible. Si tampoco
+    // trae sÃ­mbolo, mostrar el cÃ³digo es seguro y completamente dinÃ¡mico.
+    for (final rate in snapshot.rates) {
+      final matchesDisplayCode = rate.displayCurrencyCode != null &&
+          canonicalCurrencyCode(rate.displayCurrencyCode!) == code;
+      if (matchesDisplayCode &&
+          rate.conversionCode == null &&
+          rate.symbol.trim().isNotEmpty) {
+        return rate.symbol.trim();
+      }
+    }
+
+    return code;
   }
 
   void _setQuickAmount(int amount) {
@@ -1021,7 +1044,23 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
         'Tasa histórica del ${_historyDateLabel(pickedDate)}: '
         '${CurrencyFormatter.moneyRate(historicalValue, _toCode)}',
       );
-    } catch (error) {
+    } catch (error, stackTrace) {
+      Future.microtask(() async {
+        await AuditService.instance.logError(
+          AuditLog(
+            accion: 'CALCULATOR_HISTORICAL_RATE_FAILED',
+            mensaje: error.toString(),
+            codigo: error.runtimeType.toString(),
+            metadatos: {
+              'rateId': rate.id,
+              'rateName': rate.name,
+              'selectedDate': pickedDate.toIso8601String(),
+              'stackTrace': stackTrace.toString(),
+            },
+          ),
+        );
+      });
+
       if (!mounted) return;
       setState(() {
         _historicalRateValuesByRate.remove(rate.id);
@@ -1029,7 +1068,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       });
 
       final message = error is FormatException
-          ? error.message
+          ? 'No pudimos consultar la tasa histórica. Seguimos usando la tasa actual.'
           : 'No se pudo obtener la tasa histórica. Se usa la tasa actual.';
       _showSnackBar(message);
     }
@@ -1172,12 +1211,12 @@ class _CalculatorContent extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         const verticalPadding = 36.0;
-        final minHeight = constraints.maxHeight > verticalPadding
+        final minHeight = constraints.hasBoundedHeight &&
+                constraints.maxHeight > verticalPadding
             ? constraints.maxHeight - verticalPadding
             : 0.0;
 
-        return SingleChildScrollView(
-          physics: const AlwaysScrollableScrollPhysics(),
+        return Padding(
           padding: const EdgeInsets.fromLTRB(18, 0, 18, 28),
           child: ConstrainedBox(
             constraints: BoxConstraints(maxWidth: 520, minHeight: minHeight),
@@ -1838,15 +1877,15 @@ class _QuickAmounts extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        const gap = 8.0;
-        final itemWidth = (constraints.maxWidth - gap * 5) / 5;
+        const gap = 6.0;
+        final itemWidth = (constraints.maxWidth - gap * 4) / 5;
         return Wrap(
           spacing: gap,
           runSpacing: gap,
           children: amounts.map((amount) {
             final isSelected = selectedAmount == amount;
             return SizedBox(
-              width: itemWidth.clamp(44, 76),
+              width: itemWidth.clamp(40, 72),
               child: _QuickAmountButton(
                 amount: amount,
                 isSelected: isSelected,
@@ -1884,7 +1923,7 @@ class _QuickAmountButton extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(8),
         child: Container(
-          height: 42,
+          height: 38,
           alignment: Alignment.center,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(8),
@@ -2007,7 +2046,7 @@ class _CalculatorSkeletonState extends State<_CalculatorSkeleton>
       builder: (context, child) {
         return Opacity(opacity: 0.3 + 0.7 * _controller.value, child: child);
       },
-      child: SingleChildScrollView(
+      child: Padding(
         padding: const EdgeInsets.fromLTRB(18, 8, 18, 28),
         child: Center(
           child: ConstrainedBox(

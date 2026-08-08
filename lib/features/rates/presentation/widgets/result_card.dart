@@ -86,7 +86,7 @@ class ResultCard extends StatelessWidget {
             if (rate.keptPreviousValue) ...[
               const SizedBox(height: 10),
               Text(
-                'No se pudo actualizar el monto por problemas con el servidor.',
+                'La tasa no se actualizó. Mostramos el último valor disponible.',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: AppColors.warning,
                   fontWeight: FontWeight.w800,
