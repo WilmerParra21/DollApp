@@ -1,5 +1,6 @@
 import 'package:dollapp/core/models/audit_log.dart';
 import 'package:dollapp/core/services/audit_service.dart';
+import 'package:dollapp/core/widgets/app_notice.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../app/app_routes.dart';
@@ -58,7 +59,22 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _loadInitialData() async {
     try {
-      await HttpExchangeRateRepository.instance.getRates(forceRefresh: true);
+      final snapshot = await HttpExchangeRateRepository.instance.getRates(
+        forceRefresh: true,
+      );
+      if (!mounted) return;
+
+      setState(() => _isRefreshing = false);
+      if (snapshot.usedFallback) {
+        _showSnackBar(
+          context,
+          'Sin conexión a internet.',
+        );
+        return;
+      }
+
+      _showSnackBar(context, 'Tasas actualizadas correctamente.');
+      return;
       if (mounted) {
         setState(() {
           _loadFailed = false;
@@ -242,7 +258,22 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => _isRefreshing = true);
 
     try {
-      await HttpExchangeRateRepository.instance.getRates(forceRefresh: true);
+      final snapshot = await HttpExchangeRateRepository.instance.getRates(
+        forceRefresh: true,
+      );
+      if (!mounted) return;
+
+      setState(() => _isRefreshing = false);
+      if (snapshot.usedFallback) {
+        _showSnackBar(
+          context,
+          'Sin conexión a internet.',
+        );
+        return;
+      }
+
+      _showSnackBar(context, 'Tasas actualizadas correctamente.');
+      return;
     } catch (error) {
       Future.microtask(() async {
         try {
@@ -256,14 +287,17 @@ class _HomeScreenState extends State<HomeScreen> {
           );
         } catch (_) {}
       });
-      // Error handled in repository
+      if (!mounted) return;
+
+      setState(() => _isRefreshing = false);
+      _showSnackBar(
+        context,
+        error is NetworkUnavailableException
+            ? 'Sin conexión a internet.'
+            : 'No pudimos actualizar las tasas. Inténtalo nuevamente.',
+      );
+      return;
     }
-
-    if (!mounted) return;
-
-    setState(() => _isRefreshing = false);
-
-    _showSnackBar(context, 'Tasas actualizadas correctamente.');
   }
 
   @override
@@ -394,9 +428,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showSnackBar(BuildContext context, String message) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    showAppNotice(context, message);
   }
 }
 
@@ -463,22 +495,19 @@ class _HomeContent extends StatelessWidget {
               onFavoriteTap: () async {
                 final nextIsFavorite = !rate.isFavorite;
                 if (nextIsFavorite && favoriteCount >= 3 && !rate.isFavorite) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text(
-                        'Solo puedes tener 3 conversiones en favoritos.',
-                      ),
-                    ),
+                  showAppNotice(
+                    context,
+                    'Solo puedes tener 3 conversiones en favoritos.',
                   );
                   return;
                 }
 
-                final messenger = ScaffoldMessenger.of(context);
                 await HttpExchangeRateRepository.instance.setFavorite(
                   rate.id,
                   nextIsFavorite,
                 );
 
+                final messenger = ScaffoldMessenger.of(context);
                 messenger.showSnackBar(
                   SnackBar(
                     content: Text(

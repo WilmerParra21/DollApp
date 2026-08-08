@@ -72,6 +72,11 @@ class AuditService {
     } catch (error, stackTrace) {
       // La auditorÃ­a no debe provocar otro error, pero tampoco ocultar que
       // el envÃ­o fallÃ³: queda visible en los logs de la aplicaciÃ³n.
+      if (error.toString().contains('SocketException') ||
+          error.toString().contains('Failed host lookup')) {
+        debugPrint('AuditService: evento pendiente; no hay conexión.');
+        return;
+      }
       debugPrint('AuditService: no se pudo guardar el evento: $error');
       debugPrint(stackTrace.toString());
     }

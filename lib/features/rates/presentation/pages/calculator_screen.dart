@@ -1,5 +1,6 @@
 import 'package:dollapp/core/models/audit_log.dart';
 import 'package:dollapp/core/services/audit_service.dart';
+import 'package:dollapp/core/widgets/app_notice.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -150,6 +151,17 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       );
       if (!mounted) return;
 
+      if (latest.usedFallback) {
+        setState(() {
+          _isLoading = false;
+          _offlineNoData = false;
+        });
+        _showSnackBar(
+          'Sin conexión a internet.',
+        );
+        return;
+      }
+
       if (_bootSnapshot != null && !_canBindSnapshot(latest)) {
         _showSnackBar(
           'No se pudo actualizar la tasa fijada. Se mantiene la tasa anterior.',
@@ -180,6 +192,11 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
         } catch (_) {}
       });
       if (!mounted) return;
+      if (error is NetworkUnavailableException) {
+        _showSnackBar(
+          'No se pudieron actualizar las tasas porque no hay conexión.',
+        );
+      }
       if (_bootSnapshot == null) {
         setState(() {
           _isLoading = false;
@@ -594,6 +611,13 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
         forceRefresh: true,
       );
       if (!mounted) return;
+
+      if (latest.usedFallback) {
+        _showSnackBar(
+          'Sin conexión a internet.',
+        );
+        return;
+      }
 
       if (_bootSnapshot != null && !_canBindSnapshot(latest)) {
         _showSnackBar(
@@ -1075,9 +1099,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
   }
 
   void _showSnackBar(String message) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    showAppNotice(context, message);
   }
 }
 
