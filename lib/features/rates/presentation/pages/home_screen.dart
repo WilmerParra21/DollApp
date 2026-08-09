@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dollapp/core/models/audit_log.dart';
 import 'package:dollapp/core/services/audit_service.dart';
 import 'package:dollapp/core/widgets/app_notice.dart';
@@ -33,6 +35,8 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   late ValueNotifier<ExchangeRateSnapshot?> _snapshotNotifier;
   var _isRefreshing = false;
+  var _ratesNoticeVisible = false;
+  Timer? _ratesNoticeTimer;
   var _bottomRefreshDrag = 0.0;
 
   var _updateSheetShown = false;
@@ -73,14 +77,11 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
+      setState(() {
+        _loadFailed = false;
+        _offlineWithoutData = false;
+      });
       _showSnackBar(context, 'Tasas actualizadas correctamente.');
-      return;
-      if (mounted) {
-        setState(() {
-          _loadFailed = false;
-          _offlineWithoutData = false;
-        });
-      }
     } catch (e) {
       Future.microtask(() async {
         try {
@@ -95,6 +96,11 @@ class _HomeScreenState extends State<HomeScreen> {
         } catch (_) {}
       });
       if (!mounted) return;
+      if (e is RateRefreshLimitException || e is RatesAlreadyUpdatedException) {
+        setState(() => _isRefreshing = false);
+        _showRatesAlreadyUpdatedNotice();
+        return;
+      }
       setState(() {
         _loadFailed = true;
         _offlineWithoutData = e is NetworkUnavailableException;
@@ -131,6 +137,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _ratesNoticeTimer?.cancel();
     _snapshotNotifier.removeListener(_tryRedirectToPinnedCalculator);
     super.dispose();
   }
@@ -253,7 +260,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _refreshRates() async {
-    if (_isRefreshing) return;
+    if (_isRefreshing ||
+        _ratesNoticeVisible ||
+        HttpExchangeRateRepository.isRatesNoticeVisible) {
+      return;
+    }
 
     setState(() => _isRefreshing = true);
 
@@ -288,6 +299,11 @@ class _HomeScreenState extends State<HomeScreen> {
         } catch (_) {}
       });
       if (!mounted) return;
+      if (error is RateRefreshLimitException || error is RatesAlreadyUpdatedException) {
+        setState(() => _isRefreshing = false);
+        _showRatesAlreadyUpdatedNotice();
+        return;
+      }
 
       setState(() => _isRefreshing = false);
       _showSnackBar(
@@ -429,6 +445,16 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _showSnackBar(BuildContext context, String message) {
     showAppNotice(context, message);
+  }
+
+  void _showRatesAlreadyUpdatedNotice() {
+    if (!mounted) return;
+    _ratesNoticeTimer?.cancel();
+    setState(() => _ratesNoticeVisible = true);
+    _showSnackBar(context, 'Las tasas ya están actualizadas.');
+    _ratesNoticeTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted) setState(() => _ratesNoticeVisible = false);
+    });
   }
 }
 

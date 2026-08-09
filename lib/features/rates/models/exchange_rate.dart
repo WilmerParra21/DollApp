@@ -16,6 +16,8 @@ class ExchangeRate {
     this.displayValue,
     this.displayCurrencyCode,
     this.conversionCode,
+    this.moneyTypeSymbol,
+    this.conversionSymbol,
     this.isFavorite = false,
   });
 
@@ -35,6 +37,10 @@ class ExchangeRate {
   final double? displayValue;
   final String? displayCurrencyCode;
   final String? conversionCode;
+  /// Symbol for [moneyType], the quoted/result currency of this row.
+  final String? moneyTypeSymbol;
+  /// Symbol for [conversionCode], the anchor/source currency of this row.
+  final String? conversionSymbol;
   final bool isFavorite;
 
   bool get isUp => changePercent > 0;
@@ -65,6 +71,8 @@ class ExchangeRate {
       displayValue: displayValue,
       displayCurrencyCode: displayCurrencyCode,
       conversionCode: conversionCode,
+      moneyTypeSymbol: moneyTypeSymbol,
+      conversionSymbol: conversionSymbol,
       isFavorite: isFavorite ?? this.isFavorite,
     );
   }
@@ -87,6 +95,8 @@ class ExchangeRate {
       'displayValue': displayValue,
       'displayCurrencyCode': displayCurrencyCode,
       'conversionCode': conversionCode,
+      'moneyTypeSymbol': moneyTypeSymbol,
+      'conversionSymbol': conversionSymbol,
       'isFavorite': isFavorite,
     };
   }
@@ -118,6 +128,8 @@ class ExchangeRate {
       displayValue: (json['displayValue'] as num?)?.toDouble(),
       displayCurrencyCode: json['displayCurrencyCode'] as String?,
       conversionCode: json['conversionCode'] as String?,
+      moneyTypeSymbol: json['moneyTypeSymbol'] as String?,
+      conversionSymbol: json['conversionSymbol'] as String?,
       isFavorite: json['isFavorite'] as bool? ?? false,
     );
   }

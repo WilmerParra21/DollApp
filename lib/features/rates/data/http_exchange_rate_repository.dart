@@ -24,6 +24,33 @@ class NetworkUnavailableException implements Exception {
   String toString() => 'No Internet connection available.';
 }
 
+class RateRefreshLimitException implements Exception {
+  const RateRefreshLimitException(this.retryAfter);
+
+  final Duration retryAfter;
+
+  @override
+  String toString() =>
+      'Rate refresh limit reached. Retry after ${retryAfter.inSeconds} seconds.';
+}
+
+class RatesAlreadyUpdatedException implements Exception {
+  const RatesAlreadyUpdatedException(this.retryAfter);
+
+  final Duration retryAfter;
+
+  @override
+  String toString() =>
+      'Rates already updated. Retry after ${retryAfter.inMinutes} minutes.';
+}
+
+class HistoricalRateResult {
+  const HistoricalRateResult({required this.value, required this.usedDate});
+
+  final double value;
+  final DateTime usedDate;
+}
+
 class HttpExchangeRateRepository implements ExchangeRateRepository {
   HttpExchangeRateRepository({http.Client? client})
     : _client = client ?? http.Client();
@@ -31,16 +58,62 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
   static final HttpExchangeRateRepository instance =
       HttpExchangeRateRepository();
 
-  static const _historyCacheKey = 'exchange_rate_history_v2';
-  static const _historyCacheExpiryKey = 'exchange_rate_history_expiry';
+  static const _historyCacheKey = 'exchange_rate_history_v4';
+  static const _historyCacheExpiryKey = 'exchange_rate_history_expiry_v4';
   static const _historyCacheTtlHours = 24;
+  static const _refreshAttemptsKey = 'exchange_rate_refresh_attempts_v1';
+  static const _lastSuccessfulRefreshKey =
+      'exchange_rate_last_successful_refresh_v1';
+  static const _refreshWindow = Duration(minutes: 1);
+  static const _successfulRefreshWindow = Duration(hours: 4);
+  static const _maxRefreshAttempts = 2;
   static const _snapshotTable = 'snapshot';
+  static const _liveRatesTimeout = Duration(seconds: 20);
 
   final http.Client _client;
+  static Future<void> _refreshLimitChain = Future<void>.value();
+  static DateTime? _ratesNoticeUntil;
+
+  static bool get isRatesNoticeVisible {
+    final until = _ratesNoticeUntil;
+    return until != null && DateTime.now().isBefore(until);
+  }
   ExchangeRateSnapshot? _cachedSnapshot;
   Map<String, List<ExchangeRateHistoryPoint>>? _cachedHistory;
   Database? _snapshotDb;
   ValueNotifier<ExchangeRateSnapshot?> snapshotNotifier = ValueNotifier(null);
+
+  Future<void> _enforceRefreshLimit() {
+    final operation = _refreshLimitChain.then((_) async {
+      final prefs = await SharedPreferences.getInstance();
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final cutoff = now - _refreshWindow.inMilliseconds;
+      final attempts = (prefs.getStringList(_refreshAttemptsKey) ?? [])
+          .map(int.tryParse)
+          .whereType<int>()
+          .where((value) => value > cutoff)
+          .toList();
+
+      if (attempts.length >= _maxRefreshAttempts) {
+        final oldest = attempts.reduce((a, b) => a < b ? a : b);
+        final retryAfter = Duration(
+          milliseconds: (oldest + _refreshWindow.inMilliseconds) - now,
+        );
+        throw RateRefreshLimitException(
+          retryAfter.isNegative ? Duration.zero : retryAfter,
+        );
+      }
+
+      attempts.add(now);
+      await prefs.setStringList(
+        _refreshAttemptsKey,
+        attempts.map((value) => value.toString()).toList(),
+      );
+    });
+
+    _refreshLimitChain = operation.catchError((_) {});
+    return operation;
+  }
 
   Future<Database> _getSnapshotDb() async {
     if (_snapshotDb != null) return _snapshotDb!;
@@ -82,19 +155,70 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
   bool _isNetworkError(Object error) {
     return error is SocketException ||
         error is http.ClientException ||
-        error is TimeoutException ||
         error is HandshakeException;
+  }
+
+  Future<Duration?> _timeUntilRefreshAllowed(
+    ExchangeRateSnapshot? snapshot,
+  ) async {
+    if (snapshot == null || snapshot.usedFallback) return null;
+
+    final now = DateTime.now();
+    final prefs = await SharedPreferences.getInstance();
+    final savedMillis = prefs.getInt(_lastSuccessfulRefreshKey);
+
+    if (savedMillis == null) {
+      final snapshotDate = snapshot.updatedAt.toLocal();
+      final sameDay = snapshotDate.year == now.year &&
+          snapshotDate.month == now.month &&
+          snapshotDate.day == now.day;
+      if (sameDay) {
+        await prefs.setInt(
+          _lastSuccessfulRefreshKey,
+          now.millisecondsSinceEpoch,
+        );
+        return _successfulRefreshWindow;
+      }
+      return null;
+    }
+
+    final lastRefresh = DateTime.fromMillisecondsSinceEpoch(savedMillis);
+    final sameDay = lastRefresh.year == now.year &&
+        lastRefresh.month == now.month &&
+        lastRefresh.day == now.day;
+
+    if (!sameDay) return null;
+
+    final elapsed = now.difference(lastRefresh);
+    if (elapsed >= _successfulRefreshWindow) return null;
+    return _successfulRefreshWindow - elapsed;
+  }
+
+  Future<void> _markSuccessfulRefresh() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(
+      _lastSuccessfulRefreshKey,
+      DateTime.now().millisecondsSinceEpoch,
+    );
   }
 
   @override
   Future<ExchangeRateSnapshot> getRates({bool forceRefresh = false}) async {
     final previousSnapshot = _cachedSnapshot ?? await _loadSavedSnapshot();
 
+    final retryAfter = await _timeUntilRefreshAllowed(previousSnapshot);
+    if (retryAfter != null) {
+      _ratesNoticeUntil = DateTime.now().add(const Duration(seconds: 4));
+      throw RatesAlreadyUpdatedException(retryAfter);
+    }
+
+    await _enforceRefreshLimit();
+
     try {
       // Parallelize API calls
       final results = await Future.wait([
         _fetchSupabaseRates(),
-        _fetchRemoteHistories(),
+        _fetchRemoteHistories(forceRefresh: forceRefresh),
       ]);
       final liveRates = results[0] as _SupabaseRates;
       final histories = results[1] as Map<String, List<ExchangeRateHistoryPoint>>;
@@ -114,6 +238,7 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
         usedFallback: false,
       );
       await _saveSnapshot(_cachedSnapshot!);
+      await _markSuccessfulRefresh();
       snapshotNotifier.value = _cachedSnapshot;
       return _cachedSnapshot!;
     } catch (error, stackTrace) {
@@ -139,16 +264,34 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
       });
 
       if (_cachedSnapshot != null) {
+        if (!_isNetworkError(error)) {
+          rethrow;
+        }
+        final fallbackError = _isNetworkError(error)
+            ? null
+            : error.toString();
         _cachedSnapshot = await _snapshotWithSavedHistory(
-          _cachedSnapshot!.copyWith(usedFallback: true),
+          _cachedSnapshot!.copyWith(
+            usedFallback: true,
+            fallbackError: fallbackError,
+          ),
         );
         snapshotNotifier.value = _cachedSnapshot;
         return _cachedSnapshot!;
       }
 
       if (previousSnapshot != null) {
+        if (!_isNetworkError(error)) {
+          rethrow;
+        }
+        final fallbackError = _isNetworkError(error)
+            ? null
+            : error.toString();
         _cachedSnapshot = await _snapshotWithSavedHistory(
-          previousSnapshot.copyWith(usedFallback: true),
+          previousSnapshot.copyWith(
+            usedFallback: true,
+            fallbackError: fallbackError,
+          ),
         );
         snapshotNotifier.value = _cachedSnapshot;
         return _cachedSnapshot!;
@@ -303,8 +446,11 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
         );
       }
 
-      final previousValue = values[values.length - 2];
-      final changePercent = previousValue == 0
+      // During non-operating days the API can repeat the last published rate
+      // for today. Compare against the most recent *different* value so a
+      // repeated weekend rate does not hide the available historical trend.
+      final previousValue = _latestDifferentPositiveValue(values);
+      final changePercent = previousValue == null
           ? 0.0
           : ((currentValue - previousValue) / previousValue) * 100;
 
@@ -314,6 +460,23 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
         historyPoints: historyPoints,
       );
     }).toList();
+  }
+
+  double? _latestDifferentPositiveValue(List<double> values) {
+    final currentValue = values.last;
+    for (var index = values.length - 2; index >= 0; index--) {
+      final candidate = values[index];
+      if (candidate > 0) {
+        final changePercent =
+            ((currentValue - candidate) / candidate).abs() * 100;
+        // Ignore insignificant differences caused by the API formatting the
+        // live value to two decimals while history keeps more precision.
+        if (changePercent > 0.01) {
+          return candidate;
+        }
+      }
+    }
+    return null;
   }
 
   Future<_SupabaseRates> _fetchSupabaseRates() async {
@@ -328,10 +491,15 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
 
     final response = await _client
         .get(uri, headers: _supabaseHeaders())
-        .timeout(const Duration(seconds: 12));
+        .timeout(_liveRatesTimeout);
     
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw FormatException('Supabase respondio ${response.statusCode}');
+      final body = utf8.decode(response.bodyBytes).trim();
+      final preview = body.length > 300 ? body.substring(0, 300) : body;
+      final detail = preview.isEmpty ? '' : ': $preview';
+      throw FormatException(
+        'Supabase respondio ${response.statusCode}$detail',
+      );
     }
 
     final decoded = jsonDecode(utf8.decode(response.bodyBytes));
@@ -356,12 +524,19 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
       'apikey': AppConfig.supabaseAnonKey,
       'Accept': 'application/json',
       'Content-Type': 'application/json',
+      'Cache-Control': 'no-cache',
     };
   }
 
-  Future<Map<String, List<ExchangeRateHistoryPoint>>> _fetchRemoteHistories() async {
+  Future<Map<String, List<ExchangeRateHistoryPoint>>> _fetchRemoteHistories({
+    bool forceRefresh = false,
+  }) async {
+    if (forceRefresh) {
+      _cachedHistory = null;
+    }
+
     // Check cache first with TTL
-    if (_cachedHistory != null) {
+    if (!forceRefresh && _cachedHistory != null) {
       final prefs = await SharedPreferences.getInstance();
       final expiry = prefs.getInt(_historyCacheExpiryKey);
       final now = DateTime.now().millisecondsSinceEpoch;
@@ -374,6 +549,9 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
       final uri = Uri.https(
         '${AppConfig.supabaseProjectRef}.supabase.co',
         '/functions/v1/get-tasas-historico',
+        forceRefresh
+            ? {'refresh': DateTime.now().millisecondsSinceEpoch.toString()}
+            : null,
       );
      
       final response = await _client
@@ -388,6 +566,11 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
 
       final decoded = jsonDecode(utf8.decode(response.bodyBytes));
       final histories = _extractHistoryEntries(decoded);
+      if (histories.isEmpty) {
+        throw const FormatException(
+          'La API de históricos no devolvió registros válidos.',
+        );
+      }
       _cachedHistory = histories;
 
       // Cache with TTL
@@ -419,7 +602,7 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
       });
 
       // Fallback to cached history if available
-      if (_cachedHistory != null) {
+      if (!forceRefresh && _cachedHistory != null) {
         return _cachedHistory!;
       }
 
@@ -428,12 +611,14 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
       final rawHistory = prefs.getString(_historyCacheKey);
       if (rawHistory != null) {
         try {
-          final decoded = jsonDecode(rawHistory);
-          if (decoded is Map<String, dynamic>) {
-            final histories = _deserializeHistories(decoded);
-            _cachedHistory = histories;
-            return histories;
-          }
+            final decoded = jsonDecode(rawHistory);
+            if (decoded is Map<String, dynamic>) {
+              final histories = _deserializeHistories(decoded);
+              if (histories.isNotEmpty) {
+                _cachedHistory = histories;
+                return histories;
+              }
+            }
         } catch (_) {
           // Invalid cache, ignore
         }
@@ -444,6 +629,42 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
   }
 
   Future<double> fetchHistoricalRate({
+    required String nombre,
+    required DateTime fecha,
+  }) async {
+    final result = await fetchHistoricalRateDetails(
+      nombre: nombre,
+      fecha: fecha,
+    );
+    return result.value;
+  }
+
+  Future<HistoricalRateResult> fetchHistoricalRateDetails({
+    required String nombre,
+    required DateTime fecha,
+  }) async {
+    Object? lastError;
+    for (final candidateName in _historicalNameCandidates(nombre)) {
+      try {
+        return await _fetchHistoricalRateOnce(
+          nombre: candidateName,
+          fecha: fecha,
+        );
+      } catch (error) {
+        lastError = error;
+        if (!error.toString().contains('(400)')) {
+          rethrow;
+        }
+      }
+    }
+
+    if (lastError != null) {
+      throw lastError;
+    }
+    throw const FormatException('No se encontrÃ³ la tasa histÃ³rica.');
+  }
+
+  Future<HistoricalRateResult> _fetchHistoricalRateOnce({
     required String nombre,
     required DateTime fecha,
   }) async {
@@ -502,7 +723,30 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
       );
     }
 
-    return value;
+    final usedDate = _extractDate(decoded['fechaTasaUsada']) ?? fecha;
+    return HistoricalRateResult(value: value, usedDate: usedDate);
+  }
+
+  List<String> _historicalNameCandidates(String rawName) {
+    final name = rawName.trim();
+    final candidates = <String>{name};
+
+    // Some historical records were stored with UTF-8 bytes interpreted as
+    // Latin-1. Try that representation when the exact name is rejected.
+    try {
+      candidates.add(latin1.decode(utf8.encode(name)));
+    } catch (_) {}
+
+    try {
+      candidates.add(utf8.decode(latin1.encode(name)));
+    } catch (_) {}
+
+    // Support old cached names that lost the accent in "DÃ³lar".
+    final mojibakeDolar = 'D\u00C3\u00B3lar';
+    candidates.add(name.replaceFirst('Dolar', mojibakeDolar));
+    candidates.add(name.replaceFirst('D\u00F3lar', mojibakeDolar));
+
+    return candidates.where((candidate) => candidate.isNotEmpty).toList();
   }
 
   Map<String, dynamic> _serializeHistories(
@@ -633,6 +877,10 @@ final tasas = decoded['tasas'];
             final rawToCurrency = item['conver'] ?? item['conversion'];
             final rawName = item['nombre'] ?? item['name'];
             final rawSymbol = item['simbolo'];
+            final rawMoneyTypeSymbol =
+                item['simboloMoneda'] ?? item['simbolo_moneda'];
+            final rawConversionSymbol =
+                item['simboloConver'] ?? item['simbolo_conver'];
             final rawCode =
                 rawToCurrency ??
                 rawFromCurrency ??
@@ -677,6 +925,8 @@ _cleanString(item['type-money'] ?? item['type_money']);
               displayCurrencyCode ?? '',
               conversionCode ?? '',
               sourceUpdatedAtLabel ?? '',
+              rawMoneyTypeSymbol?.toString() ?? '',
+              rawConversionSymbol?.toString() ?? '',
             ].join('|');
 
             if (seenEntryKeys.contains(entryKey)) {
@@ -696,6 +946,8 @@ entries.add(_SupabaseRateEntry(
               conversionCode: conversionCode,
               sourceUpdatedAtLabel: sourceUpdatedAtLabel,
               simbolo: _cleanString(rawSymbol),
+              moneyTypeSymbol: _cleanString(rawMoneyTypeSymbol),
+              conversionSymbol: _cleanString(rawConversionSymbol),
             ));
           }
         }
@@ -902,7 +1154,7 @@ return ExchangeRate(
        code: base.code,
        name: entry.name ?? base.name,
        value: normalizedValue,
-       symbol: entry.simbolo ?? base.symbol,
+       symbol: entry.moneyTypeSymbol ?? entry.simbolo ?? base.symbol,
        updatedAt: hasValidValue ? updatedAt : previous?.updatedAt ?? updatedAt,
        isOfficial: base.isOfficial,
        changePercent: base.changePercent,
@@ -917,6 +1169,10 @@ return ExchangeRate(
        displayValue: displayValue,
        displayCurrencyCode: displayCurrencyCode,
        conversionCode: entry.conversionCode ?? previous?.conversionCode,
+       moneyTypeSymbol:
+           entry.moneyTypeSymbol ?? previous?.moneyTypeSymbol,
+       conversionSymbol:
+           entry.conversionSymbol ?? previous?.conversionSymbol,
        isFavorite: isFavorite,
      );
   }
@@ -1069,6 +1325,8 @@ class _SupabaseRateEntry {
     this.conversionCode,
     this.sourceUpdatedAtLabel,
     this.simbolo,
+    this.moneyTypeSymbol,
+    this.conversionSymbol,
   });
 
   final String id;
@@ -1080,6 +1338,8 @@ class _SupabaseRateEntry {
   final String? conversionCode;
   final String? sourceUpdatedAtLabel;
   final String? simbolo;
+  final String? moneyTypeSymbol;
+  final String? conversionSymbol;
 
   String? get fromCurrency => moneyType;
 }

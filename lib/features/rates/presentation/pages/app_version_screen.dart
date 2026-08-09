@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../../../core/constants/app_colors.dart';
 import '../../../../core/widgets/app_background.dart';
@@ -30,7 +31,7 @@ class AppVersionScreen extends StatelessWidget {
           icon: const Icon(Icons.arrow_back_rounded),
           onPressed: () => Navigator.pop(context),
         ),
-        title: const Text('VERSIÓN DE LA APLICACIÓN', style: TextStyle(fontSize: 16),),
+        title: const Text('VERSIÃ“N DE LA APLICACIÃ“N', style: TextStyle(fontSize: 16),),
       ),
       body: SafeArea(
         child: AppBackground(
@@ -64,7 +65,7 @@ class AppVersionScreen extends StatelessWidget {
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                'Tus tasas al día',
+                                'Tus tasas al dÃ­a',
                                 style: Theme.of(context).textTheme.bodyMedium
                                     ?.copyWith(
                                       color: colorScheme.onSurfaceVariant,
@@ -79,11 +80,11 @@ class AppVersionScreen extends StatelessWidget {
                     const SizedBox(height: 12),
                     VersionInfoCard(
                       children: const [
-                        _InfoRow(label: 'Versión', value: '1.0.6'),
-                        _InfoRow(label: 'Estado', value: 'Beta'),
+                        _DynamicVersionRow(),
+                        _InfoRow(label: 'Estado', value: 'v1.0'),
                         _InfoRow(
                           label: 'Última actualización',
-                          value: '07/08/2026',
+                          value: '09/08/2026',
                         ),
                       ],
                     ),
@@ -91,13 +92,13 @@ class AppVersionScreen extends StatelessWidget {
                     VersionInfoCard(
                       children: [
                         Text(
-                          'Descripción',
+                          'DescripciÃ³n',
                           style: Theme.of(context).textTheme.titleMedium
                               ?.copyWith(fontWeight: FontWeight.w900),
                         ),
                         const SizedBox(height: 10),
                         Text(
-                          'DollApp te permite consultar tasas de cambio, comparar referencias y calcular conversiones de forma rápida, clara y sencilla.',
+                          'DollApp te permite consultar tasas de cambio, comparar referencias y calcular conversiones de forma rÃ¡pida, clara y sencilla.',
                           style: Theme.of(context).textTheme.bodyMedium
                               ?.copyWith(
                                 color: colorScheme.onSurfaceVariant,
@@ -162,19 +163,19 @@ class AppVersionScreen extends StatelessWidget {
                     VersionInfoCard(
                       children: [
                         Text(
-                          'Características',
+                          'CaracterÃ­sticas',
                           style: Theme.of(context).textTheme.titleMedium
                               ?.copyWith(fontWeight: FontWeight.w900),
                         ),
                         const SizedBox(height: 12),
                         const _FeatureTile(
                           icon: Icons.trending_up_rounded,
-                          text: 'Consulta de tasas BCV, EUR, CNY, COP y más.',
+                          text: 'Consulta de tasas BCV, EUR, CNY, COP y mÃ¡s.',
                         ),
                       
                         const _FeatureTile(
                           icon: Icons.calculate_rounded,
-                          text: 'Calculadora rápida',
+                          text: 'Calculadora rÃ¡pida',
                         ),
                         const _FeatureTile(
                           icon: Icons.dark_mode_rounded,
@@ -185,7 +186,7 @@ class AppVersionScreen extends StatelessWidget {
                     ),
                     const SizedBox(height: 22),
                     Text(
-                      '© 2026 Devsparra. Todos los derechos reservados.',
+                      'Â© 2026 Devsparra. Todos los derechos reservados.',
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: colorScheme.onSurfaceVariant,
@@ -198,6 +199,26 @@ class AppVersionScreen extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _DynamicVersionRow extends StatelessWidget {
+  const _DynamicVersionRow();
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<PackageInfo>(
+      future: PackageInfo.fromPlatform(),
+      builder: (context, snapshot) {
+        final info = snapshot.data;
+        final version = info?.version ?? 'Cargando...';
+   
+        return _InfoRow(
+          label: 'Versión',
+          value: version,
+        );
+      },
     );
   }
 }

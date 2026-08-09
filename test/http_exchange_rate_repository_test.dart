@@ -76,6 +76,8 @@ SUPABASE_ANON_KEY=test-key
                   'nombre': 'Dolar BCV',
                   'moneda': 'Bs',
                   'conver': 'usd',
+                  'simboloMoneda': 'Bs',
+                  'simboloConver': r'$',
                   'monto': '485,22',
                   'fechaActualizacion': '28/04/2026',
                 },
@@ -120,6 +122,8 @@ SUPABASE_ANON_KEY=test-key
     expect(usd.value, 485.22);
     expect(usd.moneyType, 'BS');
     expect(usd.conversionCode, 'USD');
+    expect(usd.moneyTypeSymbol, 'Bs');
+    expect(usd.conversionSymbol, r'$');
     expect(usd.sparklineValues, [483.95, 484.10, 485.22]);
     expect(usd.changePercent, closeTo(0.231, 0.001));
 
@@ -202,6 +206,55 @@ expect(usdt.sparklineValues, [639.50, 641.15, 643.42]);
     expect(snapshot.rates.map((rate) => rate.id).toSet().length,
         snapshot.rates.length);
   });
+
+  test(
+    'uses the previous different rate when the latest rate is repeated',
+    () async {
+    final repository = HttpExchangeRateRepository(
+      client: MockClient((request) async {
+        if (request.url.path.endsWith('/get-tasas-historico')) {
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode({
+                'Dolar BCV': [
+                  {'fecha': '2026-08-07', 'monto': 100.0, 'moneda': 'Bs'},
+                  {'fecha': '2026-08-06', 'monto': 98.0, 'moneda': 'Bs'},
+                ],
+              }),
+            ),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+
+        return http.Response.bytes(
+          utf8.encode(
+            jsonEncode({
+              'fecha': '2026-08-08',
+              'tasas': [
+                {
+                  'nombre': 'Dolar BCV',
+                  'moneda': 'Bs',
+                  'conver': 'usd',
+                  'monto': '100,00',
+                },
+              ],
+            }),
+          ),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    final snapshot = await repository.getRates(forceRefresh: true);
+    final rate = rowByName(snapshot, 'Dolar BCV');
+
+    expect(rate.sparklineValues, [98.0, 100.0, 100.0]);
+    expect(rate.changePercent, closeTo(2.0408, 0.001));
+    expect(rate.hasTrend, isTrue);
+    },
+  );
 
   test('marks a rate as favorite and preserves it in local snapshot', () async {
     final repository = HttpExchangeRateRepository(

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dollapp/core/models/audit_log.dart';
 import 'package:dollapp/core/services/audit_service.dart';
 import 'package:dollapp/core/widgets/app_notice.dart';
@@ -53,11 +55,14 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
   bool _missingQuoteBinding = false;
   bool _isLoading = true;
   bool _isRefreshing = false;
+  bool _ratesNoticeVisible = false;
+  Timer? _ratesNoticeTimer;
   bool _isPinned = false;
   bool _offlineNoData = false;
   bool _isFetchingHistoricalRate = false;
   final Map<String, DateTime> _selectedHistoricalDateByRate = {};
   final Map<String, double> _historicalRateValuesByRate = {};
+  final Map<String, ExchangeRate> _historicalTrendRatesByRate = {};
 
   String _fromCode = '';
   String _toCode = '';
@@ -192,6 +197,14 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
         } catch (_) {}
       });
       if (!mounted) return;
+      if (error is RateRefreshLimitException || error is RatesAlreadyUpdatedException) {
+        setState(() {
+          _isLoading = false;
+          _offlineNoData = false;
+        });
+        _showRatesAlreadyUpdatedNotice();
+        return;
+      }
       if (error is NetworkUnavailableException) {
         _showSnackBar(
           'No se pudieron actualizar las tasas porque no hay conexión.',
@@ -212,6 +225,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
 
   @override
   void dispose() {
+    _ratesNoticeTimer?.cancel();
     _snapshotNotifier.removeListener(_onSnapshotUpdated);
     _amountController.dispose();
     super.dispose();
@@ -421,7 +435,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
           '$reciprocalLine';
     }
 
-    return 'Tasa usada · ${rate.name}$conversionLabel\n'
+    return 'Tasa usada · ${rate.name}\n'
         '$direct\n'
         '$reciprocalLine';
   }
@@ -537,10 +551,11 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
                       );
                     }
 
+                    final trendRateForUi =
+                        _historicalTrendRatesByRate[rowForUi.id] ?? rowForUi;
+
                     final currencyNames = _namesForCalculatorPair(ratesSnapshot);
-                    final currencyBadges = _badgesForCalculatorPair(
-                      ratesSnapshot,
-                    );
+                    final currencyBadges = _badgesForCalculatorPair();
 
                     final favoriteRates = ratesSnapshot.rates
                         .where((rate) => rate.isFavorite)
@@ -559,7 +574,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
                       toCode: _toCode,
                       currencyNames: currencyNames,
                       currencyBadges: currencyBadges,
-                      selectedRate: rowForUi,
+                      selectedRate: trendRateForUi,
                       amount: _amount,
                       formattedResult: _formattedResult(),
                       rateLabel: _formattedRateLabel(),
@@ -599,7 +614,11 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
   void _noopPickHandler() {}
 
   Future<void> _refreshRates() async {
-    if (_isRefreshing) return;
+    if (_isRefreshing ||
+        _ratesNoticeVisible ||
+        HttpExchangeRateRepository.isRatesNoticeVisible) {
+      return;
+    }
 
     setState(() {
       _isRefreshing = true;
@@ -648,6 +667,10 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
         } catch (_) {}
       });
       if (!mounted) return;
+      if (error is RateRefreshLimitException || error is RatesAlreadyUpdatedException) {
+        _showRatesAlreadyUpdatedNotice();
+        return;
+      }
       if (error is NetworkUnavailableException) {
         _showSnackBar(
           'Sin conexión. Conecta a internet para actualizar las tasas.',
@@ -725,50 +748,26 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
     };
   }
 
-  Map<String, String> _badgesForCalculatorPair(ExchangeRateSnapshot snapshot) {
+  Map<String, String> _badgesForCalculatorPair() {
     final badges = <String, String>{};
-    for (final code in {
-      _fromCode,
-      _toCode,
-    }.map((c) => canonicalCurrencyCode(c)).toSet()) {
-      badges[code] = _symbolForCurrencyCode(snapshot, code);
+    final quote = _activeQuote;
+
+    if (quote != null) {
+      final anchor = canonicalCurrencyCode(quote.anchor);
+      final counter = canonicalCurrencyCode(quote.counter);
+      final anchorSymbol = quote.row.conversionSymbol?.trim();
+      final counterSymbol = (quote.row.moneyTypeSymbol ?? quote.row.symbol)
+          .trim();
+
+      if (anchorSymbol != null && anchorSymbol.isNotEmpty) {
+        badges[anchor] = anchorSymbol;
+      }
+      if (counterSymbol.isNotEmpty) {
+        badges[counter] = counterSymbol;
+      }
     }
+
     return badges;
-  }
-
-  String _symbolForCurrencyCode(
-    ExchangeRateSnapshot snapshot,
-    String rawCode,
-  ) {
-    final code = canonicalCurrencyCode(rawCode);
-
-    // El sÃ­mbolo de una fila representa la moneda de la tasa. Solo usar
-    // coincidencias directas evita asignar, por ejemplo, el sÃ­mbolo EUR a
-    // VES cuando VES solo aparece como moneda de destino.
-    for (final rate in snapshot.rates) {
-      final matchesDirectCode = [
-        rate.code,
-        rate.conversionCode,
-      ].any((value) => value != null && canonicalCurrencyCode(value) == code);
-      if (matchesDirectCode && rate.symbol.trim().isNotEmpty) {
-        return rate.symbol.trim();
-      }
-    }
-
-    // En fuentes planas puede no existir conversionCode; en ese caso,
-    // displayCurrencyCode es la Ãºnica identificaciÃ³n disponible. Si tampoco
-    // trae sÃ­mbolo, mostrar el cÃ³digo es seguro y completamente dinÃ¡mico.
-    for (final rate in snapshot.rates) {
-      final matchesDisplayCode = rate.displayCurrencyCode != null &&
-          canonicalCurrencyCode(rate.displayCurrencyCode!) == code;
-      if (matchesDisplayCode &&
-          rate.conversionCode == null &&
-          rate.symbol.trim().isNotEmpty) {
-        return rate.symbol.trim();
-      }
-    }
-
-    return code;
   }
 
   void _setQuickAmount(int amount) {
@@ -993,6 +992,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       _amountController.selection = const TextSelection.collapsed(offset: 0);
       _selectedHistoricalDateByRate.clear();
       _historicalRateValuesByRate.clear();
+      _historicalTrendRatesByRate.clear();
       _isFetchingHistoricalRate = false;
     });
   }
@@ -1027,7 +1027,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       context: context,
       locale: const Locale('es'),
       initialDate: initialDate,
-      firstDate: DateTime(now.year - 5),
+      firstDate: DateTime(now.year, 1, 1),
       lastDate: now,
       helpText: 'Selecciona la fecha de la tasa',
     );
@@ -1046,27 +1046,70 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
     setState(() {
       _selectedHistoricalDateByRate[rate.id] = pickedDate;
       _historicalRateValuesByRate.remove(rate.id);
+      _historicalTrendRatesByRate.remove(rate.id);
       _isFetchingHistoricalRate = true;
     });
 
     _showSnackBar('Consultando tasa histórica...');
 
     try {
-      final historicalValue =
-          await HttpExchangeRateRepository.instance.fetchHistoricalRate(
+      final historicalResult = await HttpExchangeRateRepository.instance
+          .fetchHistoricalRateDetails(
         nombre: rate.name,
         fecha: pickedDate,
       );
 
+      HistoricalRateResult? previousResult;
+      for (var offset = 1; offset <= 10; offset++) {
+        final previousDate = historicalResult.usedDate.subtract(
+          Duration(days: offset),
+        );
+        if (previousDate.year != historicalResult.usedDate.year) {
+          break;
+        }
+        try {
+          final candidate = await HttpExchangeRateRepository.instance
+              .fetchHistoricalRateDetails(
+                nombre: rate.name,
+                fecha: previousDate,
+              );
+          final changePercent =
+              ((historicalResult.value - candidate.value) / candidate.value)
+                  .abs() *
+              100;
+          if (candidate.usedDate.isBefore(historicalResult.usedDate) &&
+              changePercent > 0.01) {
+            previousResult = candidate;
+            break;
+          }
+        } on FormatException {
+          // Continue looking for the previous published rate.
+        }
+      }
+
+      final historicalChangePercent = previousResult == null
+          ? 0.0
+          : ((historicalResult.value - previousResult.value) /
+                    previousResult.value) *
+              100;
+      final historicalTrendRate = rate.copyWith(
+        changePercent: historicalChangePercent,
+        sparklineValues: previousResult == null
+            ? [historicalResult.value]
+            : [previousResult.value, historicalResult.value],
+      );
+
       if (!mounted) return;
       setState(() {
-        _historicalRateValuesByRate[rate.id] = historicalValue;
+        _selectedHistoricalDateByRate[rate.id] = historicalResult.usedDate;
+        _historicalRateValuesByRate[rate.id] = historicalResult.value;
+        _historicalTrendRatesByRate[rate.id] = historicalTrendRate;
         _isFetchingHistoricalRate = false;
       });
 
       _showSnackBar(
         'Tasa histórica del ${_historyDateLabel(pickedDate)}: '
-        '${CurrencyFormatter.moneyRate(historicalValue, _toCode)}',
+        '${CurrencyFormatter.moneyRate(historicalResult.value, _toCode)}',
       );
     } catch (error, stackTrace) {
       Future.microtask(() async {
@@ -1088,6 +1131,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       if (!mounted) return;
       setState(() {
         _historicalRateValuesByRate.remove(rate.id);
+        _historicalTrendRatesByRate.remove(rate.id);
         _isFetchingHistoricalRate = false;
       });
 
@@ -1100,6 +1144,16 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
 
   void _showSnackBar(String message) {
     showAppNotice(context, message);
+  }
+
+  void _showRatesAlreadyUpdatedNotice() {
+    if (!mounted) return;
+    _ratesNoticeTimer?.cancel();
+    setState(() => _ratesNoticeVisible = true);
+    _showSnackBar('Las tasas ya están actualizadas.');
+    _ratesNoticeTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted) setState(() => _ratesNoticeVisible = false);
+    });
   }
 }
 
@@ -1687,7 +1741,7 @@ class _ResultPanel extends StatelessWidget {
             children: [
               Expanded(
                 child: Text(
-                  '${CurrencyFormatter.moneyWithCode(amount, toCode)} a $fromCode',
+                  '$fromCode a ${CurrencyFormatter.moneyWithCode(amount, toCode)}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -1768,6 +1822,13 @@ class _ResultPanel extends StatelessWidget {
   }
 }
 
+void _showTradingChart(BuildContext context, ExchangeRate rate) {
+  showDialog<void>(
+    context: context,
+    builder: (_) => _TradingChartDialog(rate: rate),
+  );
+}
+
 class _TrendPanel extends StatelessWidget {
   const _TrendPanel({
     required this.rate,
@@ -1780,35 +1841,52 @@ class _TrendPanel extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
     final hasTrend = rate.hasTrend;
 
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: colorScheme.onSurfaceVariant.withValues(alpha: .06),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => _showTradingChart(context, rate),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: colorScheme.outlineVariant.withValues(alpha: .58),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Tendencia de la tasa',
-            style: Theme.of(context).textTheme.labelMedium?.copyWith(
-              fontWeight: FontWeight.w900,
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: colorScheme.onSurfaceVariant.withValues(alpha: .06),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: colorScheme.outlineVariant.withValues(alpha: .58),
             ),
           ),
-       
-          if (hasTrend)
-            Align(
-              alignment: Alignment.centerRight,
-              child: TrendIndicator(
-                changePercent: rate.changePercent,
-                isUp: rate.isUp,
-                compact: true,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Tendencia de la tasa',
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                  if (hasTrend)
+                    TrendIndicator(
+                      changePercent: rate.changePercent,
+                      isUp: rate.isUp,
+                      compact: true,
+                    ),
+                  const SizedBox(width: 6),
+                  Icon(
+                    Icons.chevron_right_rounded,
+                    color: hasTrend
+                        ? (rate.isUp
+                              ? AppColors.positiveGreen
+                              : AppColors.negativeRed)
+                        : colorScheme.onSurfaceVariant,
+                    size: 24,
+                  ),
+                ],
               ),
-            ),
           if (!hasTrend) ...[
             const SizedBox(height: 12),
             Row(
@@ -1831,10 +1909,225 @@ class _TrendPanel extends StatelessWidget {
               ],
             ),
           ],
-        ],
+            ],
+          ),
+        ),
       ),
     );
   }
+}
+
+class _TradingChartDialog extends StatelessWidget {
+  const _TradingChartDialog({required this.rate});
+
+  final ExchangeRate rate;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final points = rate.historyPoints.toList()
+      ..sort((a, b) => a.date.compareTo(b.date));
+    final visiblePoints = points.length > 7
+        ? points.sublist(points.length - 7)
+        : points;
+    final hasChart = visiblePoints.length >= 2;
+    final first = hasChart ? visiblePoints.first.value : 0.0;
+    final last = hasChart ? visiblePoints.last.value : 0.0;
+    final isUp = last >= first;
+
+    return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 620),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Histórico de ${rate.name}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close_rounded),
+                    tooltip: 'Cerrar',
+                  ),
+                ],
+              ),
+              Text(
+                'Últimos ${visiblePoints.length} días disponibles',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 14),
+              if (!hasChart)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 70),
+                  child: Center(
+                    child: Text(
+                      'Aún no hay suficientes datos históricos.',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  ),
+                )
+              else ...[
+                SizedBox(
+                  height: 270,
+                  width: double.infinity,
+                  child: CustomPaint(
+                    painter: _TradingChartPainter(
+                      points: visiblePoints,
+                      lineColor: isUp
+                          ? AppColors.positiveGreen
+                          : AppColors.negativeRed,
+                      labelColor: colorScheme.onSurfaceVariant,
+                      gridColor: colorScheme.outlineVariant.withValues(
+                        alpha: .45,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      _chartDateLabel(visiblePoints.first.date),
+                      style: Theme.of(context).textTheme.labelSmall,
+                    ),
+                    Text(
+                      _chartDateLabel(visiblePoints.last.date),
+                      style: Theme.of(context).textTheme.labelSmall,
+                    ),
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _chartDateLabel(DateTime date) =>
+      '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}';
+}
+
+class _TradingChartPainter extends CustomPainter {
+  const _TradingChartPainter({
+    required this.points,
+    required this.lineColor,
+    required this.labelColor,
+    required this.gridColor,
+  });
+
+  final List<ExchangeRateHistoryPoint> points;
+  final Color lineColor;
+  final Color labelColor;
+  final Color gridColor;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const left = 54.0;
+    const right = 12.0;
+    const top = 14.0;
+    const bottom = 12.0;
+    final chart = Rect.fromLTWH(
+      left,
+      top,
+      size.width - left - right,
+      size.height - top - bottom,
+    );
+    final values = points.map((point) => point.value).toList();
+    var minValue = values.reduce((a, b) => a < b ? a : b);
+    var maxValue = values.reduce((a, b) => a > b ? a : b);
+    if (minValue == maxValue) {
+      final padding = minValue.abs() * .01;
+      minValue -= padding == 0 ? 1 : padding;
+      maxValue += padding == 0 ? 1 : padding;
+    }
+
+    double yFor(double value) =>
+        chart.bottom - ((value - minValue) / (maxValue - minValue)) * chart.height;
+    double xFor(int index) => points.length == 1
+        ? chart.center.dx
+        : chart.left + (chart.width * index / (points.length - 1));
+
+    final gridPaint = Paint()
+      ..color = gridColor
+      ..strokeWidth = 1;
+    final labelStyle = TextStyle(color: labelColor, fontSize: 10);
+    for (var row = 0; row < 4; row++) {
+      final fraction = row / 3;
+      final y = chart.top + chart.height * fraction;
+      canvas.drawLine(Offset(chart.left, y), Offset(chart.right, y), gridPaint);
+      final value = maxValue - (maxValue - minValue) * fraction;
+      final text = TextPainter(
+        text: TextSpan(
+          text: CurrencyFormatter.formatNumber(value, 2),
+          style: labelStyle,
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout(maxWidth: left - 8);
+      text.paint(canvas, Offset(0, y - text.height / 2));
+    }
+
+    final linePath = Path();
+    for (var index = 0; index < points.length; index++) {
+      final point = Offset(xFor(index), yFor(points[index].value));
+      if (index == 0) {
+        linePath.moveTo(point.dx, point.dy);
+      } else {
+        linePath.lineTo(point.dx, point.dy);
+      }
+    }
+
+    final areaPath = Path.from(linePath)
+      ..lineTo(xFor(points.length - 1), chart.bottom)
+      ..lineTo(xFor(0), chart.bottom)
+      ..close();
+    canvas.drawPath(
+      areaPath,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [lineColor.withValues(alpha: .28), lineColor.withValues(alpha: 0)],
+        ).createShader(chart),
+    );
+    canvas.drawPath(
+      linePath,
+      Paint()
+        ..color = lineColor
+        ..strokeWidth = 3
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round,
+    );
+
+    final pointPaint = Paint()..color = lineColor;
+    final haloPaint = Paint()..color = lineColor.withValues(alpha: .18);
+    for (var index = 0; index < points.length; index++) {
+      final point = Offset(xFor(index), yFor(points[index].value));
+      canvas.drawCircle(point, 7, haloPaint);
+      canvas.drawCircle(point, 3.5, pointPaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _TradingChartPainter oldDelegate) =>
+      oldDelegate.points != points || oldDelegate.lineColor != lineColor;
 }
 
 class _ActionButtons extends StatelessWidget {

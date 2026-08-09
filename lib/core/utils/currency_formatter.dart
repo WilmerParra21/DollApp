@@ -36,7 +36,17 @@ class CurrencyFormatter {
   static String bolivarScaled(double value, int decimals) =>
       'Bs. ${formatNumber(value, decimals)}';
 
-  static String decimal(double value) => formatNumber(value);
+  /// Formats a value for copying with two decimals without rounding.
+  ///
+  /// The clipboard must truncate values such as `0.865` to `0.86` instead of
+  /// changing them to `0.87`.
+  static String decimal(double value) {
+    if (!value.isFinite) return value.toString();
+
+    final truncated =
+        (value.abs() * 100).truncateToDouble() / 100 * value.sign;
+    return formatNumber(truncated, 2);
+  }
 
   static String percent(double value) {
     final sign = value > 0 ? '+' : '';
@@ -56,8 +66,11 @@ class CurrencyFormatter {
     final parts = fixed.split('.');
     final integer = parts.first;
     final decimalDigits = parts.last;
-    final buffer = StringBuffer();
+    return '${_groupInteger(integer)},$decimalDigits';
+  }
 
+  static String _groupInteger(String integer) {
+    final buffer = StringBuffer();
     for (var i = 0; i < integer.length; i++) {
       final positionFromEnd = integer.length - i;
       buffer.write(integer[i]);
@@ -65,7 +78,6 @@ class CurrencyFormatter {
         buffer.write('.');
       }
     }
-
-    return '${buffer.toString()},$decimalDigits';
+    return buffer.toString();
   }
 }

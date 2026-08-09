@@ -51,3 +51,6 @@ app.*.map.json
 /android/key.properties
 /android/app/*.jks
 /android/app/*.keystore
+
+# Edge Function local de tasas, no commitear
+/supabase/functions/tasas-divisas/
