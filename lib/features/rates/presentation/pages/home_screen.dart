@@ -533,15 +533,11 @@ class _HomeContent extends StatelessWidget {
                   nextIsFavorite,
                 );
 
-                final messenger = ScaffoldMessenger.of(context);
-                messenger.showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      nextIsFavorite
-                          ? 'Conversión guardada como favorita.'
-                          : 'Conversión removida de favoritos.',
-                    ),
-                  ),
+                showAppNotice(
+                  context,
+                  nextIsFavorite
+                      ? 'Conversión guardada como favorita.'
+                      : 'Conversión removida de favoritos.',
                 );
               },
               onTap: () {

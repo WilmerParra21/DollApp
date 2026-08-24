@@ -1,10 +1,9 @@
 import 'dart:convert';
 
+import 'package:dollapp/app/doll_app.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-import 'package:dollapp/app/doll_app.dart';
 
 void main() {
   setUp(() {
@@ -109,7 +108,7 @@ final _savedRealRatesSnapshot = {
     },
     {
       'code': 'COP',
-      'name': 'Peso Colombiano',
+      'name': 'COP -> USD',
       'source': 'TRM Colombia',
       'value': 3633.76,
       'symbol': r'$',

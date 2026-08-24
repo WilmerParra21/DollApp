@@ -234,9 +234,17 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
   double get _amount {
     final text = _normalizedAmountText(_amountController.text);
     if (text.isEmpty) {
+      // Sin monto escrito, la calculadora muestra la tasa del día tomando
+      // como referencia una unidad de la moneda de origen.
       return 1;
     }
     return double.tryParse(text) ?? 0;
+  }
+
+  double? get _enteredAmount {
+    final text = _normalizedAmountText(_amountController.text);
+    if (text.isEmpty) return null;
+    return double.tryParse(text);
   }
 
   String _normalizedAmountText(String value) {
@@ -370,16 +378,19 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
     }
   }
 
-  double _computedNumericResult() {
+  double _computedNumericResultForAmount(
+    double enteredAmount, {
+    double? historicalValue,
+  }) {
     if (_missingQuoteBinding || _activeQuote == null) {
       return double.nan;
     }
     try {
-      final historicalValue =
+      final selectedHistoricalValue = historicalValue ??
           _historicalRateValuesByRate[_activeQuote!.row.id];
       final unitsPerAnchor =
-          (historicalValue != null && historicalValue > 0)
-              ? historicalValue
+          (selectedHistoricalValue != null && selectedHistoricalValue > 0)
+              ? selectedHistoricalValue
               : _activeQuote!.unitsPerAnchor;
       final quote = ParsedQuote(
         row: _activeQuote!.row,
@@ -387,10 +398,14 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
         counter: _activeQuote!.counter,
         unitsPerAnchor: unitsPerAnchor,
       );
-      return quote.convert(_amount, _fromCode, _toCode);
+      return quote.convert(enteredAmount, _fromCode, _toCode);
     } on ArgumentError {
       return double.nan;
     }
+  }
+
+  double _computedNumericResult() {
+    return _computedNumericResultForAmount(_amount);
   }
 
   ExchangeRate? _resolvedRowForTrend() => _activeQuote?.row;
@@ -448,12 +463,33 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
         : AppColors.lightBackground;
     final appBarForeground = isDark ? AppColors.white : AppColors.forestGreen;
 
-    // ignore: deprecated_member_use
-    return WillPopScope(
-      onWillPop: () async {
-        // When the calculator is shown for a pinned fixed rate, the hardware back button
-        // should exit the app instead of navigating back to the list screen.
-        return true;
+    final keyboardIsVisible = MediaQuery.of(context).viewInsets.bottom > 0;
+
+    return PopScope(
+      // Permitir el back del sistema únicamente cuando la calculadora
+      // anclada debe cerrar la app y no hay teclado visible. En los
+      // demás casos onPopInvokedWithResult procesa el retroceso manualmente.
+      canPop: widget.closeAppOnBack && !keyboardIsVisible,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+
+        // El primer retroceso con el monto enfocado debe cerrar únicamente el
+        // teclado. Esto evita que la calculadora anclada cierre la app cuando
+        // el usuario escribió y luego dejó el campo vacío.
+        if (keyboardIsVisible) {
+          FocusManager.instance.primaryFocus?.unfocus();
+          return;
+        }
+
+        // La pantalla principal puede tener una conversión fijada y, al
+        // volver a ella, intentaría redirigirnos inmediatamente a la
+        // calculadora. Esta entrada fue manual desde el menú, por lo que el
+        // regreso debe quedarse en el menú/lista de tasas.
+        Navigator.pushReplacementNamed(
+          context,
+          AppRoutes.home,
+          arguments: const HomeRouteArgs(skipPinnedRedirect: true),
+        );
       },
       child: Scaffold(
         backgroundColor: appBarBackground,
@@ -481,7 +517,11 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
                   arguments: const HomeRouteArgs(skipPinnedRedirect: true),
                 );
               } else {
-                Navigator.pop(context);
+                Navigator.pushReplacementNamed(
+                  context,
+                  AppRoutes.home,
+                  arguments: const HomeRouteArgs(skipPinnedRedirect: true),
+                );
               }
             },
           ),
@@ -600,6 +640,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
                       onQuickAmount: _setQuickAmount,
                       onRequestHistoricalDate: _requestHistoricalDate,
                       isFetchingHistoricalRate: _isFetchingHistoricalRate,
+                      onOpenExpandedCalculator: _showExpandedCalculator,
                     );
                   },
                 ),
@@ -998,7 +1039,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
   }
 
   Future<void> _copyResult() async {
-    if (_amount == 0) {
+    if (_enteredAmount == null || _amount == 0) {
       _showSnackBar('Ingresa un monto mayor a 0 para copiar.');
       return;
     }
@@ -1013,13 +1054,45 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
     _showSnackBar('Resultado copiado');
   }
 
+  Future<void> _showExpandedCalculator() async {
+    final quote = _activeQuote;
+    if (quote == null) return;
+
+    final rate = quote.row;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return _ExpandedCalculatorSheet(
+          initialAmount: _amount,
+          fromCode: _fromCode,
+          toCode: _toCode,
+          rate: rate,
+          initialHistoricalDate: _selectedHistoricalDateByRate[rate.id],
+          initialHistoricalValue: _historicalRateValuesByRate[rate.id],
+          calculate: (amount, historicalValue) =>
+              _computedNumericResultForAmount(
+                amount,
+                historicalValue: historicalValue,
+              ),
+          onRequestHistoricalDate: (selectedRate) =>
+              _requestHistoricalDate(selectedRate),
+        );
+      },
+    );
+  }
+
   String _historyDateLabel(DateTime date) {
     final day = date.day.toString().padLeft(2, '0');
     final month = date.month.toString().padLeft(2, '0');
     return '$day/$month/${date.year}';
   }
 
-  Future<void> _requestHistoricalDate(ExchangeRate rate) async {
+  Future<HistoricalRateResult?> _requestHistoricalDate(
+    ExchangeRate rate,
+  ) async {
     final now = DateTime.now();
     final initialDate = _selectedHistoricalDateByRate[rate.id] ?? now;
 
@@ -1029,17 +1102,21 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       initialDate: initialDate,
       firstDate: DateTime(now.year, 1, 1),
       lastDate: now,
+      // La fecha histórica debe seleccionarse únicamente desde el calendario.
+      // Evita que el usuario cambie al modo de entrada manual y envíe formatos
+      // que la API no pueda interpretar.
+      initialEntryMode: DatePickerEntryMode.calendarOnly,
       helpText: 'Selecciona la fecha de la tasa',
     );
 
     if (pickedDate == null) {
-      return;
+      return null;
     }
 
-    await _selectHistoricalDate(rate, pickedDate);
+    return _selectHistoricalDate(rate, pickedDate);
   }
 
-  Future<void> _selectHistoricalDate(
+  Future<HistoricalRateResult?> _selectHistoricalDate(
     ExchangeRate rate,
     DateTime pickedDate,
   ) async {
@@ -1099,7 +1176,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
             : [previousResult.value, historicalResult.value],
       );
 
-      if (!mounted) return;
+      if (!mounted) return historicalResult;
       setState(() {
         _selectedHistoricalDateByRate[rate.id] = historicalResult.usedDate;
         _historicalRateValuesByRate[rate.id] = historicalResult.value;
@@ -1111,6 +1188,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
         'Tasa histórica del ${_historyDateLabel(pickedDate)}: '
         '${CurrencyFormatter.moneyRate(historicalResult.value, _toCode)}',
       );
+      return historicalResult;
     } catch (error, stackTrace) {
       Future.microtask(() async {
         await AuditService.instance.logError(
@@ -1128,7 +1206,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
         );
       });
 
-      if (!mounted) return;
+      if (!mounted) return null;
       setState(() {
         _historicalRateValuesByRate.remove(rate.id);
         _historicalTrendRatesByRate.remove(rate.id);
@@ -1139,6 +1217,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
           ? 'No pudimos consultar la tasa histórica. Seguimos usando la tasa actual.'
           : 'No se pudo obtener la tasa histórica. Se usa la tasa actual.';
       _showSnackBar(message);
+      return null;
     }
   }
 
@@ -1253,6 +1332,7 @@ class _CalculatorContent extends StatelessWidget {
     required this.onQuickAmount,
     required this.onRequestHistoricalDate,
     required this.isFetchingHistoricalRate,
+    required this.onOpenExpandedCalculator,
   });
 
   final TextEditingController amountController;
@@ -1279,8 +1359,10 @@ class _CalculatorContent extends StatelessWidget {
   final VoidCallback onSwap;
   final ValueChanged<bool> onPinChanged;
   final ValueChanged<int> onQuickAmount;
-  final ValueChanged<ExchangeRate> onRequestHistoricalDate;
+  final Future<HistoricalRateResult?> Function(ExchangeRate)
+      onRequestHistoricalDate;
   final bool isFetchingHistoricalRate;
+  final VoidCallback onOpenExpandedCalculator;
 
   @override
   Widget build(BuildContext context) {
@@ -1342,6 +1424,7 @@ class _CalculatorContent extends StatelessWidget {
                   onCopy: onCopy,
                   onRequestHistoricalDate: onRequestHistoricalDate,
                   isFetchingHistoricalRate: isFetchingHistoricalRate,
+                  onOpenExpandedCalculator: onOpenExpandedCalculator,
                 ),
                 const SizedBox(height: 12),
                 _ActionButtons(onCopy: onCopy, onClear: onClear),
@@ -1450,6 +1533,7 @@ class _AmountField extends StatelessWidget {
           inputFormatters: [
             FilteringTextInputFormatter.allow(RegExp(r'[0-9,.]')),
             const NoConsecutiveDecimalSeparatorFormatter(),
+            const _MaxAmountDigitsFormatter(12),
           ],
           onChanged: (_) => onChanged(),
           style: Theme.of(context).textTheme.headlineSmall?.copyWith(
@@ -1520,6 +1604,250 @@ class _AmountField extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _MaxAmountDigitsFormatter extends TextInputFormatter {
+  const _MaxAmountDigitsFormatter(this.maxDigits);
+
+  final int maxDigits;
+
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    final digits = newValue.text.replaceAll(RegExp(r'[^0-9]'), '');
+    return digits.length <= maxDigits ? newValue : oldValue;
+  }
+}
+
+class _ExpandedCalculatorSheet extends StatefulWidget {
+  const _ExpandedCalculatorSheet({
+    required this.initialAmount,
+    required this.fromCode,
+    required this.toCode,
+    required this.rate,
+    required this.initialHistoricalDate,
+    required this.initialHistoricalValue,
+    required this.calculate,
+    required this.onRequestHistoricalDate,
+  });
+
+  final double initialAmount;
+  final String fromCode;
+  final String toCode;
+  final ExchangeRate rate;
+  final DateTime? initialHistoricalDate;
+  final double? initialHistoricalValue;
+  final double Function(double amount, double? historicalValue) calculate;
+  final Future<HistoricalRateResult?> Function(ExchangeRate)
+      onRequestHistoricalDate;
+
+  @override
+  State<_ExpandedCalculatorSheet> createState() =>
+      _ExpandedCalculatorSheetState();
+}
+
+class _ExpandedCalculatorSheetState extends State<_ExpandedCalculatorSheet> {
+  late final TextEditingController _controller;
+  late DateTime? _selectedDate = widget.initialHistoricalDate;
+  late double? _historicalValue = widget.initialHistoricalValue;
+  bool _isFetchingDate = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final initialText = widget.initialAmount > 0
+        ? widget.initialAmount.toStringAsFixed(
+            widget.initialAmount.truncateToDouble() == widget.initialAmount
+                ? 0
+                : 2,
+          )
+        : '';
+    _controller = TextEditingController(text: initialText);
+    _controller.addListener(_onAmountChanged);
+  }
+
+  @override
+  void dispose() {
+    _controller
+      ..removeListener(_onAmountChanged)
+      ..dispose();
+    super.dispose();
+  }
+
+  double? get _amount {
+    final normalized = _controller.text.trim().replaceAll(' ', '').replaceAll(',', '.');
+    final value = double.tryParse(normalized);
+    return value != null && value.isFinite && value >= 0 ? value : null;
+  }
+
+  double get _result {
+    final amount = _amount;
+    if (amount == null) return double.nan;
+    return widget.calculate(amount, _historicalValue);
+  }
+
+  void _onAmountChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _changeDate() async {
+    setState(() => _isFetchingDate = true);
+    final result = await widget.onRequestHistoricalDate(widget.rate);
+    if (!mounted) return;
+    if (result != null) {
+      setState(() {
+        _selectedDate = result.usedDate;
+        _historicalValue = result.value;
+      });
+    }
+    setState(() => _isFetchingDate = false);
+  }
+
+  Future<void> _copy() async {
+    final result = _result;
+    if (result.isNaN || result.isInfinite) return;
+    await Clipboard.setData(ClipboardData(text: result.toString()));
+    if (mounted) {
+      showAppNotice(context, 'Resultado copiado');
+    }
+  }
+
+  String _dateLabel(DateTime date) {
+    final day = date.day.toString().padLeft(2, '0');
+    final month = date.month.toString().padLeft(2, '0');
+    return '$day/$month/${date.year}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final result = _result;
+    final resultLabel = result.isNaN || result.isInfinite
+        ? '—'
+        : CurrencyFormatter.moneyRate(result, widget.toCode);
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+        decoration: BoxDecoration(
+          color: colorScheme.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 42,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: colorScheme.outlineVariant,
+                  borderRadius: BorderRadius.circular(99),
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              'Calculadora ampliada',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Puedes usar montos grandes sin afectar la calculadora principal.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _controller,
+              autofocus: true,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              inputFormatters: [
+                FilteringTextInputFormatter.allow(RegExp(r'[0-9,.]')),
+                const NoConsecutiveDecimalSeparatorFormatter(),
+                const _MaxAmountDigitsFormatter(30),
+              ],
+              decoration: InputDecoration(
+                labelText: 'Monto en ${widget.fromCode}',
+                prefixText: '${widget.fromCode}  ',
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              'Resultado',
+              style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 4),
+            SizedBox(
+              width: double.infinity,
+              height: 64,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  resultLabel,
+                  maxLines: 1,
+                  style: Theme.of(context).textTheme.displayMedium?.copyWith(
+                    color: AppColors.positiveGreen,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _selectedDate == null
+                  ? 'Tasa actual: ${widget.rate.name}'
+                  : 'Tasa del ${_dateLabel(_selectedDate!)}: ${widget.rate.name}',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: result.isNaN || result.isInfinite ? null : _copy,
+                    icon: const Icon(Icons.copy_rounded),
+                    label: const Text('Copiar'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _isFetchingDate ? null : _changeDate,
+                    icon: _isFetchingDate
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.calendar_month_rounded),
+                    label: const Text('Cambiar fecha'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -1670,6 +1998,7 @@ class _ResultPanel extends StatelessWidget {
      required this.onRequestHistoricalDate,
      required this.isFetchingHistoricalRate,
      required this.onCopy,
+     required this.onOpenExpandedCalculator,
    });
 
   String _dateLabel(DateTime date) {
@@ -1685,9 +2014,11 @@ class _ResultPanel extends StatelessWidget {
   final String rateLabel;
   final DateTime? selectedHistoricalDate;
   final ExchangeRate rate;
-  final ValueChanged<ExchangeRate> onRequestHistoricalDate;
+  final Future<HistoricalRateResult?> Function(ExchangeRate)
+      onRequestHistoricalDate;
   final bool isFetchingHistoricalRate;
   final VoidCallback onCopy;
+  final VoidCallback onOpenExpandedCalculator;
 
   @override
   Widget build(BuildContext context) {
@@ -1754,22 +2085,30 @@ class _ResultPanel extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Row(
-             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                formattedResult,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.displaySmall?.copyWith(
-                      color: AppColors.positiveGreen,
-                      fontSize: 24,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0,
+              Expanded(
+                child: GestureDetector(
+                  onTap: onOpenExpandedCalculator,
+                  child: SizedBox(
+                    height: 42,
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        formattedResult,
+                        maxLines: 1,
+                        style: Theme.of(context).textTheme.displaySmall?.copyWith(
+                          color: AppColors.positiveGreen,
+                          fontSize: 24,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0,
+                        ),
+                      ),
                     ),
+                  ),
+                ),
               ),
-          Row(
-            children: [
-                   IconButton(
+              IconButton(
                 onPressed: onCopy,
                 icon: Icon(
                   Icons.copy_rounded,
@@ -1778,31 +2117,39 @@ class _ResultPanel extends StatelessWidget {
                 ),
                 tooltip: 'Copiar resultado',
               ),
-               IconButton(
-                 onPressed: () => onRequestHistoricalDate(rate),
-                 icon: isFetchingHistoricalRate
-                     ? SizedBox(
-                         width: 20,
-                         height: 20,
-                         child: CircularProgressIndicator(
-                           strokeWidth: 2,
-                           color: colorScheme.onSurfaceVariant,
-                         ),
-                       )
-                     : Icon(
-                         Icons.calendar_month_rounded,
-                         color: colorScheme.onSurfaceVariant,
-                         size: 24,
-                       ),
-                 tooltip: selectedHistoricalDate != null
-                     ? 'Cambiar fecha histórica'
-                     : 'Seleccionar fecha histórica',
-               ),
-          
-            ],
-          )
+              IconButton(
+                onPressed: () => onRequestHistoricalDate(rate),
+                icon: isFetchingHistoricalRate
+                    ? SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      )
+                    : Icon(
+                        Icons.calendar_month_rounded,
+                        color: colorScheme.onSurfaceVariant,
+                        size: 24,
+                      ),
+                tooltip: selectedHistoricalDate != null
+                    ? 'Cambiar fecha histórica'
+                    : 'Seleccionar fecha histórica',
+              ),
             ],
           ),
+          if (formattedResult.length > 18) ...[
+            const SizedBox(height: 4),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: onOpenExpandedCalculator,
+                icon: const Icon(Icons.open_in_full_rounded, size: 16),
+                label: const Text('Ver resultado completo'),
+              ),
+            ),
+          ],
           const SizedBox(height: 10),
           Divider(color: colorScheme.outlineVariant.withValues(alpha: .65)),
           const SizedBox(height: 8),

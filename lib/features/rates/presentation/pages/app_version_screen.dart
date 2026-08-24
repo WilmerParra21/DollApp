@@ -31,7 +31,7 @@ class AppVersionScreen extends StatelessWidget {
           icon: const Icon(Icons.arrow_back_rounded),
           onPressed: () => Navigator.pop(context),
         ),
-        title: const Text('VERSIÃ“N DE LA APLICACIÃ“N', style: TextStyle(fontSize: 16),),
+        title: const Text('VERSIÓN DE LA APLICACIÓN', style: TextStyle(fontSize: 16),),
       ),
       body: SafeArea(
         child: AppBackground(
@@ -65,7 +65,7 @@ class AppVersionScreen extends StatelessWidget {
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                'Tus tasas al dÃ­a',
+                                'Tus tasas al día',
                                 style: Theme.of(context).textTheme.bodyMedium
                                     ?.copyWith(
                                       color: colorScheme.onSurfaceVariant,
@@ -84,7 +84,7 @@ class AppVersionScreen extends StatelessWidget {
                         _InfoRow(label: 'Estado', value: 'v1.0'),
                         _InfoRow(
                           label: 'Última actualización',
-                          value: '09/08/2026',
+                          value: '23/08/2026',
                         ),
                       ],
                     ),
@@ -92,13 +92,13 @@ class AppVersionScreen extends StatelessWidget {
                     VersionInfoCard(
                       children: [
                         Text(
-                          'DescripciÃ³n',
+                          'Descripción',
                           style: Theme.of(context).textTheme.titleMedium
                               ?.copyWith(fontWeight: FontWeight.w900),
                         ),
                         const SizedBox(height: 10),
                         Text(
-                          'DollApp te permite consultar tasas de cambio, comparar referencias y calcular conversiones de forma rÃ¡pida, clara y sencilla.',
+                          'DollApp te permite consultar tasas de cambio, comparar referencias y calcular conversiones de forma rápida, clara y sencilla.',
                           style: Theme.of(context).textTheme.bodyMedium
                               ?.copyWith(
                                 color: colorScheme.onSurfaceVariant,
@@ -163,19 +163,19 @@ class AppVersionScreen extends StatelessWidget {
                     VersionInfoCard(
                       children: [
                         Text(
-                          'CaracterÃ­sticas',
+                          'Características',
                           style: Theme.of(context).textTheme.titleMedium
                               ?.copyWith(fontWeight: FontWeight.w900),
                         ),
                         const SizedBox(height: 12),
                         const _FeatureTile(
                           icon: Icons.trending_up_rounded,
-                          text: 'Consulta de tasas BCV, EUR, CNY, COP y mÃ¡s.',
+                          text: 'Consulta de tasas BCV, EUR, CNY, COP y más.',
                         ),
                       
                         const _FeatureTile(
                           icon: Icons.calculate_rounded,
-                          text: 'Calculadora rÃ¡pida',
+                          text: 'Calculadora rápida',
                         ),
                         const _FeatureTile(
                           icon: Icons.dark_mode_rounded,
@@ -186,7 +186,7 @@ class AppVersionScreen extends StatelessWidget {
                     ),
                     const SizedBox(height: 22),
                     Text(
-                      'Â© 2026 Devsparra. Todos los derechos reservados.',
+                      '© 2026 Devsparra. Todos los derechos reservados.',
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: colorScheme.onSurfaceVariant,

@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+OverlayEntry? _activeNoticeEntry;
+
 void showAppNotice(
   BuildContext context,
   String message, {
@@ -11,6 +13,14 @@ void showAppNotice(
   final overlay = Overlay.maybeOf(context);
   if (overlay == null) return;
 
+  // Los avisos son globales para la aplicación: cuando llega uno nuevo, el
+  // anterior debe desaparecer antes de insertar el siguiente.
+  final previousEntry = _activeNoticeEntry;
+  if (previousEntry?.mounted ?? false) {
+    previousEntry!.remove();
+  }
+  _activeNoticeEntry = null;
+
   late final OverlayEntry entry;
   entry = OverlayEntry(
     builder: (context) => _AppNoticeEntry(
@@ -18,11 +28,15 @@ void showAppNotice(
       icon: icon,
       duration: duration,
       onDismiss: () {
+        if (identical(_activeNoticeEntry, entry)) {
+          _activeNoticeEntry = null;
+        }
         if (entry.mounted) entry.remove();
       },
     ),
   );
 
+  _activeNoticeEntry = entry;
   overlay.insert(entry);
 }
 

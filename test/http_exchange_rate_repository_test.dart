@@ -45,7 +45,7 @@ SUPABASE_ANON_KEY=test-key
                   {'fecha': '2026-04-28', 'monto': 484.10, 'moneda': 'Bs'},
                   {'fecha': '2026-04-27', 'monto': 483.95, 'moneda': 'Bs'},
                 ],
-                'Peso Colombiano': [
+                'COP -> USD': [
                   {'fecha': '2026-04-29', 'monto': 3633.76, 'moneda': 'COP'},
                   {'fecha': '2026-04-28', 'monto': 3630, 'moneda': 'COP'},
                   {'fecha': '2026-04-27', 'monto': 3628.5, 'moneda': 'COP'},
@@ -89,7 +89,7 @@ SUPABASE_ANON_KEY=test-key
                   'fechaActualizacion': '28/04/2026',
                 },
                 {
-                  'nombre': 'Peso Colombiano',
+                  'nombre': 'COP -> USD',
                   'moneda': 'COP',
                   'conver': 'usd',
                   'monto': '3633.76',
@@ -114,7 +114,7 @@ SUPABASE_ANON_KEY=test-key
     final snapshot = await repository.getRates(forceRefresh: true);
     final usd = rowByName(snapshot, 'Dolar BCV');
     final eur = rowByName(snapshot, 'Euro BCV');
-    final cop = rowByName(snapshot, 'Peso Colombiano');
+    final cop = rowByName(snapshot, 'COP -> USD');
     final usdt = rowByName(snapshot, 'Promedio USDT');
 
     expect(usd.name, 'Dolar BCV');
@@ -134,8 +134,8 @@ SUPABASE_ANON_KEY=test-key
     expect(eur.sparklineValues, [566.12, 567.80, 569.29]);
     expect(eur.changePercent, closeTo(0.262, 0.001));
 
-    expect(cop.name, 'Peso Colombiano');
-    expect(cop.id, 'USD-USD-Peso Colombiano-COP');
+    expect(cop.name, 'COP -> USD');
+    expect(cop.id, 'USD-USD-COP -> USD-COP');
     expect(cop.value, 3633.76);
     expect(cop.displayValue, 3633.76);
     expect(cop.moneyType, 'COP');
@@ -187,6 +187,13 @@ expect(usdt.sparklineValues, [639.50, 641.15, 643.42]);
                   'nombre': 'Dolar BCV',
                   'moneda': 'Bs',
                   'conver': 'usd',
+                  'monto': '450,00',
+                  'fechaActualizacion': '12/08/2025',
+                },
+                {
+                  'nombre': 'Dolar BCV',
+                  'moneda': 'Bs',
+                  'conver': 'usd',
                   'monto': '485,22',
                   'fechaActualizacion': '28/04/2026',
                 },
@@ -203,6 +210,7 @@ expect(usdt.sparklineValues, [639.50, 641.15, 643.42]);
     final usdRates = snapshot.rates.where((rate) => rate.code == 'USD');
 
     expect(usdRates.length, 1);
+    expect(usdRates.single.value, 485.22);
     expect(snapshot.rates.map((rate) => rate.id).toSet().length,
         snapshot.rates.length);
   });
@@ -566,6 +574,42 @@ final refreshedSnapshot = await repository.getRates(forceRefresh: true);
    );
 
   group('fetchHistoricalRate', () {
+    test('keeps the requested date and rate isolated between consecutive queries', () async {
+      final requests = <Map<String, dynamic>>[];
+      final repository = HttpExchangeRateRepository(
+        client: MockClient((request) async {
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          requests.add(body);
+          final isEuro = body['nombre'] == 'Euro BCV';
+          final date = body['fecha'] as String;
+          return http.Response(
+            jsonEncode({
+              'fechaTasaUsada': date,
+              'tasa': {
+                'nombre': body['nombre'],
+                'monto': isEuro ? '90,00' : '100,00',
+              },
+            }),
+            200,
+          );
+        }),
+      );
+
+      final usd = await repository.fetchHistoricalRateDetails(
+        nombre: 'Dolar BCV',
+        fecha: DateTime(2026, 8, 22),
+      );
+      final euro = await repository.fetchHistoricalRateDetails(
+        nombre: 'Euro BCV',
+        fecha: DateTime(2026, 8, 23),
+      );
+
+      expect(usd.usedDate, DateTime(2026, 8, 22));
+      expect(euro.usedDate, DateTime(2026, 8, 23));
+      expect(requests.map((request) => request['nombre']), ['Dolar BCV', 'Euro BCV']);
+      expect(requests.map((request) => request['fecha']), ['2026-08-22', '2026-08-23']);
+    });
+
     test('returns the historical rate value on success', () async {
       final repository = HttpExchangeRateRepository(
         client: MockClient((request) async {

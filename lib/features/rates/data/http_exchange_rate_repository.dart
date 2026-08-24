@@ -15,7 +15,6 @@ import 'package:sqflite/sqflite.dart';
 import '../models/exchange_rate.dart';
 import '../models/exchange_rate_snapshot.dart';
 import 'exchange_rate_repository.dart';
-import 'mock_rates.dart';
 
 class NetworkUnavailableException implements Exception {
   const NetworkUnavailableException();
@@ -217,11 +216,18 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
     try {
       // Parallelize API calls
       final results = await Future.wait([
-        _fetchSupabaseRates(),
+        _fetchSupabaseRates(forceRefresh: forceRefresh),
         _fetchRemoteHistories(forceRefresh: forceRefresh),
       ]);
       final liveRates = results[0] as _SupabaseRates;
       final histories = results[1] as Map<String, List<ExchangeRateHistoryPoint>>;
+
+      if (previousSnapshot != null &&
+          liveRates.updatedAt.isBefore(previousSnapshot.updatedAt)) {
+        throw const FormatException(
+          'La API devolvió una tasa más antigua que la tasa ya cargada.',
+        );
+      }
 
       final updatedAt = liveRates.updatedAt;
       final liveSnapshotRates = _buildLiveSnapshotRates(
@@ -479,7 +485,9 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
     return null;
   }
 
-  Future<_SupabaseRates> _fetchSupabaseRates() async {
+  Future<_SupabaseRates> _fetchSupabaseRates({
+    bool forceRefresh = false,
+  }) async {
     if (AppConfig.supabaseAnonKey.isEmpty) {
       throw const FormatException('Falta configurar SUPABASE_ANON_KEY');
     }
@@ -487,14 +495,28 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
     final uri = Uri.https(
       '${AppConfig.supabaseProjectRef}.supabase.co',
       '/functions/v1/tasas-divisas',
+      forceRefresh
+          ? {'refresh': DateTime.now().millisecondsSinceEpoch.toString()}
+          : null,
     );
 
     final response = await _client
         .get(uri, headers: _supabaseHeaders())
         .timeout(_liveRatesTimeout);
+
+    final rawBody = utf8.decode(response.bodyBytes);
+    debugPrint('[tasas-divisas] HTTP ${response.statusCode} ${response.request?.url ?? uri}');
+    debugPrint('[tasas-divisas] Respuesta cruda inicio');
+    for (var offset = 0; offset < rawBody.length; offset += 800) {
+      final end = (offset + 800 < rawBody.length)
+          ? offset + 800
+          : rawBody.length;
+      debugPrint(rawBody.substring(offset, end));
+    }
+    debugPrint('[tasas-divisas] Respuesta cruda fin');
     
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      final body = utf8.decode(response.bodyBytes).trim();
+      final body = rawBody.trim();
       final preview = body.length > 300 ? body.substring(0, 300) : body;
       final detail = preview.isEmpty ? '' : ': $preview';
       throw FormatException(
@@ -502,19 +524,29 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
       );
     }
 
-    final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+    final decoded = jsonDecode(rawBody);
     if (decoded is! Map<String, dynamic>) {
       throw const FormatException('Respuesta de tasas invalida');
     }
 
-    final entries = _extractRateEntries(decoded);
+    final updatedAt = _extractDate(decoded['fecha']);
+    if (updatedAt == null) {
+      throw const FormatException(
+        'La API de tasas no devolvió una fecha de actualización válida.',
+      );
+    }
+
+    final entries = _extractRateEntries(
+      decoded,
+      fallbackDate: updatedAt,
+    );
     if (entries.isEmpty) {
       throw const FormatException('La API respondio sin tasas utilizables');
     }
 
     return _SupabaseRates(
       entries: entries,
-      updatedAt: _extractDate(decoded['fecha']) ?? DateTime.now(),
+      updatedAt: updatedAt,
     );
   }
 
@@ -557,7 +589,7 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
       final response = await _client
           .get(uri, headers: _supabaseHeaders())
           .timeout(const Duration(seconds: 12));
- // print("Historico: ${response.body}");
+
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw FormatException(
           'Supabase historico respondio ${response.statusCode}',
@@ -864,8 +896,9 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
   }
 
   List<_SupabaseRateEntry> _extractRateEntries(
-     Map<String, dynamic> decoded,
-   ) {
+    Map<String, dynamic> decoded, {
+    required DateTime fallbackDate,
+  }) {
      final entries = <_SupabaseRateEntry>[];
      final seenEntryKeys = <String>{};
 
@@ -976,8 +1009,32 @@ entries.add(_SupabaseRateEntry(
        }
      }
 
-     return entries;
+     // La API puede devolver varias filas del mismo par (por ejemplo, si una
+     // consulta histórica insertó una fila anterior). La calculadora debe
+     // usar únicamente la fila más reciente por par y nombre, no la última
+     // fila que venga en el arreglo.
+     final latestByBinding = <String, _SupabaseRateEntry>{};
+     for (final entry in entries) {
+       final binding = _rateBindingKey(
+         fromCurrency: entry.fromCurrency ?? entry.code,
+         toCurrency: entry.conversionCode ?? entry.displayCurrencyCode,
+         name: entry.name,
+       );
+       final previous = latestByBinding[binding];
+       if (previous == null ||
+           _entryDate(entry, fallbackDate).isAfter(
+             _entryDate(previous, fallbackDate),
+           )) {
+         latestByBinding[binding] = entry;
+       }
+     }
+
+     return latestByBinding.values.toList();
    }
+
+  DateTime _entryDate(_SupabaseRateEntry entry, DateTime fallbackDate) {
+    return _extractDate(entry.sourceUpdatedAtLabel) ?? fallbackDate;
+  }
 
   String _rateCodeFromApiItem({
     required String rawCode,
@@ -1121,6 +1178,12 @@ entries.add(_SupabaseRateEntry(
     return '$day/$month/$year';
   }
 
+  String _dateLabel(DateTime date) {
+    final day = date.day.toString().padLeft(2, '0');
+    final month = date.month.toString().padLeft(2, '0');
+    return '$day/$month/${date.year}';
+  }
+
   ExchangeRate _rateFromLiveValue({
     required String id,
     required ExchangeRate base,
@@ -1135,7 +1198,7 @@ entries.add(_SupabaseRateEntry(
         ? normalizeValue(entry.code, entry.value!)
         : previous?.value ?? base.value;
     final sourceDate = hasValidValue
-        ? entry.sourceUpdatedAtLabel ?? previous?.sourceUpdatedAtLabel
+        ? entry.sourceUpdatedAtLabel ?? _dateLabel(updatedAt)
         : _fallbackSourceUpdatedAtLabel(previous, updatedAt);
     final moneyType = entry.fromCurrency ?? previous?.moneyType ?? entry.code;
     final inferredDisplayCurrencyCode =
@@ -1272,12 +1335,7 @@ Future<ExchangeRateSnapshot?> _loadSavedSnapshot() async {
       } catch (_) {}
     });
   }
-  // Fallback a datos mock para que la UI nunca quede vacía
-  return ExchangeRateSnapshot(
-    rates: MockRates.rates,
-    updatedAt: MockRates.lastUpdated,
-    usedFallback: true,
-  );
+  return null;
 }
 }
 

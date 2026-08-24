@@ -3,9 +3,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../core/constants/app_colors.dart';
 import 'app_routes.dart';
 import 'app_theme.dart';
-import '../core/constants/app_colors.dart';
 
 class DollApp extends StatefulWidget {
   const DollApp({super.key});
@@ -84,7 +84,11 @@ class _DollAppState extends State<DollApp> {
                 ? Brightness.light
                 : Brightness.dark,
           ),
-          child: child ?? const SizedBox.shrink(),
+          child: MediaQuery.withClampedTextScaling(
+            minScaleFactor: 1.0,
+            maxScaleFactor: 1.15,
+            child: child ?? const SizedBox.shrink(),
+          ),
         );
       },
       onGenerateRoute: (settings) => AppRoutes.onGenerateRoute(
