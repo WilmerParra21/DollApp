@@ -57,13 +57,15 @@ class AuditService {
       final info = await _getPackageInfo();
       final nowUtc = DateTime.now().toUtc();
       final venezuelaTime = nowUtc.subtract(const Duration(hours: 4));
+        final timestampVenezuela =
+          '${venezuelaTime.toIso8601String().replaceFirst('Z', '')}-04:00';
       final metadata = <String, dynamic>{
         ...?log.metadatos,
         'appVersion': info.version,
         'appBuildNumber': info.buildNumber,
         'platform': Platform.operatingSystem,
         'timestampUtc': nowUtc.toIso8601String(),
-        'timestampVenezuela': '${venezuelaTime.toIso8601String()}-04:00',
+        'timestampVenezuela': timestampVenezuela,
       };
 
       await Supabase.instance.client.from(_tableName).insert({

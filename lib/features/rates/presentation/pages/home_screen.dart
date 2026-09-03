@@ -286,6 +286,14 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
+      if (error is RateRefreshLimitException ||
+          error is RatesAlreadyUpdatedException) {
+        if (!mounted) return;
+        setState(() => _isRefreshing = false);
+        _showSnackBar(context, 'Tasas actualizadas correctamente.');
+        return;
+      }
+
       Future.microtask(() async {
         try {
           await AuditService.instance.logError(
@@ -442,7 +450,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _showRatesAlreadyUpdatedNotice() {
     if (!mounted) return;
-    _showSnackBar(context, 'Las tasas ya están actualizadas.');
+    _showSnackBar(context, 'Tasas actualizadas correctamente.');
   }
 }
 

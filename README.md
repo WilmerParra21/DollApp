@@ -1,13 +1,15 @@
 # DollApp
 
-DollApp es una aplicación móvil construida con Flutter para consultar tasas de cambio y mantener a los usuarios informados sobre sus actualizaciones, está orientada al consummo del público venezolano con tasas de conversión del BCV y otras utilizadas en el país.
+DollApp es una aplicación móvil construida con Flutter para consultar tasas de cambio y realizar conversiones, orientada al consumo del público venezolano con referencias del BCV y otras tasas utilizadas en el país.
 
 ## ¿Qué hace?
 
 - Muestra tasas de cambio actualizadas y datos financieros en una interfaz clara y moderna.
+- Permite consultar históricos de tasas y comparar su evolución.
+- Incluye una calculadora de conversiones con soporte para precisión ampliada.
 - Gestiona actualizaciones internas de la app mediante un modal de actualización con estado de descarga e instalación.
 - Incluye animaciones Lottie para dar una experiencia más inmersiva al momento de actualizar.
-- Ofrece mensajes de novedades, control de versión y manejo de permisos de instalación si es necesario.
+- Ofrece información de versión, fuentes de datos, política de privacidad y términos de uso.
 
 ## ¿Cómo funciona?
 
@@ -23,7 +25,21 @@ DollApp es una aplicación móvil construida con Flutter para consultar tasas de
 - `lib/app/`: configuración de temas y rutas.
 - `lib/core/`: servicios, constantes, modelos y widgets reutilizables.
 - `lib/features/rates/`: pantalla y widgets específicos de tasas y actualización.
+- `lib/features/rates/presentation/pages/app_version_screen.dart`: información de versión y modales legales.
 - `lib/features/rates/presentation/widgets/update_gate_sheet.dart`: modal de actualización con animación Lottie.
+
+## Tasas y datos
+
+- Las tasas se obtienen de fuentes públicas y reconocidas, como el Banco Central de Venezuela, TRM Colombia y servicios de referencia internacional.
+- La aplicación conserva tasas y preferencias en caché local para poder mostrar los últimos datos disponibles sin conexión.
+- Las tasas se manejan con hasta cuatro decimales. La interfaz puede mostrar una versión resumida o la precisión ampliada según el contexto.
+- Los valores son informativos y deben verificarse con la fuente correspondiente antes de realizar una operación.
+
+## Privacidad
+
+- DollApp no solicita cuentas ni recopila datos personales, contactos, ubicación o el contenido de las conversiones.
+- Si ocurre un fallo, puede enviarse información relacionada con el error únicamente para diagnosticarlo, corregirlo y mejorar la estabilidad de la aplicación.
+- La política de privacidad y los términos y condiciones están disponibles desde la pantalla `Versión de la aplicación`.
 
 ## Paleta de colores
 
@@ -69,4 +85,4 @@ DollApp utiliza una paleta inspirada en tonos verdes y neutros para transmitir c
 
 ## Notas
 
-La app está diseñada para ser adaptable a temas claros y oscuros, con un modal de actualización que debe integrarse visualmente con el fondo de la pantalla para evitar la sensación de un cuadro separado.
+La app está diseñada para ser adaptable a temas claros y oscuros. Las tasas son informativas y la disponibilidad de datos puede depender de la conexión y de las fuentes externas.
