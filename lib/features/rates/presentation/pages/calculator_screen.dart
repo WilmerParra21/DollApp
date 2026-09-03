@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:dollapp/core/models/audit_log.dart';
 import 'package:dollapp/core/services/audit_service.dart';
 import 'package:dollapp/core/widgets/app_notice.dart';
@@ -55,8 +53,6 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
   bool _missingQuoteBinding = false;
   bool _isLoading = true;
   bool _isRefreshing = false;
-  bool _ratesNoticeVisible = false;
-  Timer? _ratesNoticeTimer;
   bool _isPinned = false;
   bool _offlineNoData = false;
   bool _isFetchingHistoricalRate = false;
@@ -152,7 +148,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
   Future<void> _startBackgroundRefresh() async {
     try {
       final latest = await HttpExchangeRateRepository.instance.getRates(
-        forceRefresh: true,
+        forceRefresh: false,
       );
       if (!mounted) return;
 
@@ -184,6 +180,31 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
         _offlineNoData = false;
       });
     } catch (error) {
+      if (error is RateRefreshLimitException ||
+          error is RatesAlreadyUpdatedException) {
+        if (!mounted) return;
+        setState(() {
+          _isLoading = false;
+          _offlineNoData = false;
+        });
+        _showRatesAlreadyUpdatedNotice();
+        return;
+      }
+
+      if (error is NetworkUnavailableException) {
+        if (!mounted) return;
+        _showSnackBar(
+          'No se pudieron actualizar las tasas porque no hay conexión.',
+        );
+        if (_bootSnapshot == null) {
+          setState(() {
+            _isLoading = false;
+            _offlineNoData = true;
+          });
+        }
+        return;
+      }
+
       Future.microtask(() async {
         try {
           await AuditService.instance.logError(
@@ -197,19 +218,6 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
         } catch (_) {}
       });
       if (!mounted) return;
-      if (error is RateRefreshLimitException || error is RatesAlreadyUpdatedException) {
-        setState(() {
-          _isLoading = false;
-          _offlineNoData = false;
-        });
-        _showRatesAlreadyUpdatedNotice();
-        return;
-      }
-      if (error is NetworkUnavailableException) {
-        _showSnackBar(
-          'No se pudieron actualizar las tasas porque no hay conexión.',
-        );
-      }
       if (_bootSnapshot == null) {
         setState(() {
           _isLoading = false;
@@ -225,7 +233,6 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
 
   @override
   void dispose() {
-    _ratesNoticeTimer?.cancel();
     _snapshotNotifier.removeListener(_onSnapshotUpdated);
     _amountController.dispose();
     super.dispose();
@@ -481,15 +488,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
           return;
         }
 
-        // La pantalla principal puede tener una conversión fijada y, al
-        // volver a ella, intentaría redirigirnos inmediatamente a la
-        // calculadora. Esta entrada fue manual desde el menú, por lo que el
-        // regreso debe quedarse en el menú/lista de tasas.
-        Navigator.pushReplacementNamed(
-          context,
-          AppRoutes.home,
-          arguments: const HomeRouteArgs(skipPinnedRedirect: true),
-        );
+        Navigator.pop(context);
       },
       child: Scaffold(
         backgroundColor: appBarBackground,
@@ -517,11 +516,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
                   arguments: const HomeRouteArgs(skipPinnedRedirect: true),
                 );
               } else {
-                Navigator.pushReplacementNamed(
-                  context,
-                  AppRoutes.home,
-                  arguments: const HomeRouteArgs(skipPinnedRedirect: true),
-                );
+                Navigator.pop(context);
               }
             },
           ),
@@ -656,7 +651,6 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
 
   Future<void> _refreshRates() async {
     if (_isRefreshing ||
-        _ratesNoticeVisible ||
         HttpExchangeRateRepository.isRatesNoticeVisible) {
       return;
     }
@@ -695,6 +689,14 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
         _offlineNoData = false;
       });
     } catch (error) {
+      if (error is NetworkUnavailableException) {
+        if (!mounted) return;
+        _showSnackBar(
+          'Sin conexión. Conecta a internet para actualizar las tasas.',
+        );
+        return;
+      }
+
       Future.microtask(() async {
         try {
           await AuditService.instance.logError(
@@ -708,17 +710,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
         } catch (_) {}
       });
       if (!mounted) return;
-      if (error is RateRefreshLimitException || error is RatesAlreadyUpdatedException) {
-        _showRatesAlreadyUpdatedNotice();
-        return;
-      }
-      if (error is NetworkUnavailableException) {
-        _showSnackBar(
-          'Sin conexión. Conecta a internet para actualizar las tasas.',
-        );
-      } else {
-        _showSnackBar('No se pudo cargar la tasa para cotizar.');
-      }
+      _showSnackBar('No se pudo cargar la tasa para cotizar.');
     } finally {
       if (mounted) {
         setState(() {
@@ -1190,7 +1182,8 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       );
       return historicalResult;
     } catch (error, stackTrace) {
-      Future.microtask(() async {
+      if (!HttpExchangeRateRepository.isNetworkError(error)) {
+        Future.microtask(() async {
         await AuditService.instance.logError(
           AuditLog(
             accion: 'CALCULATOR_HISTORICAL_RATE_FAILED',
@@ -1204,7 +1197,8 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
             },
           ),
         );
-      });
+        });
+      }
 
       if (!mounted) return null;
       setState(() {
@@ -1227,12 +1221,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
 
   void _showRatesAlreadyUpdatedNotice() {
     if (!mounted) return;
-    _ratesNoticeTimer?.cancel();
-    setState(() => _ratesNoticeVisible = true);
     _showSnackBar('Las tasas ya están actualizadas.');
-    _ratesNoticeTimer = Timer(const Duration(seconds: 4), () {
-      if (mounted) setState(() => _ratesNoticeVisible = false);
-    });
   }
 }
 

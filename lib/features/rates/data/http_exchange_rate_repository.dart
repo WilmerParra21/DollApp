@@ -66,6 +66,7 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
   static const _refreshWindow = Duration(minutes: 1);
   static const _successfulRefreshWindow = Duration(hours: 4);
   static const _maxRefreshAttempts = 2;
+  static const _favoriteKeysKey = 'favorite_rate_keys_v1';
   static const _snapshotTable = 'snapshot';
   static const _liveRatesTimeout = Duration(seconds: 20);
 
@@ -81,6 +82,7 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
   Map<String, List<ExchangeRateHistoryPoint>>? _cachedHistory;
   Database? _snapshotDb;
   ValueNotifier<ExchangeRateSnapshot?> snapshotNotifier = ValueNotifier(null);
+  Future<ExchangeRateSnapshot>? _refreshInFlight;
 
   Future<void> _enforceRefreshLimit() {
     final operation = _refreshLimitChain.then((_) async {
@@ -151,7 +153,7 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
     }
   }
 
-  bool _isNetworkError(Object error) {
+  static bool isNetworkError(Object error) {
     return error is SocketException ||
         error is http.ClientException ||
         error is HandshakeException;
@@ -203,10 +205,31 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
 
   @override
   Future<ExchangeRateSnapshot> getRates({bool forceRefresh = false}) async {
-    final previousSnapshot = _cachedSnapshot ?? await _loadSavedSnapshot();
+    final inFlight = _refreshInFlight;
+    if (inFlight != null) return inFlight;
+
+    final refresh = _getRatesInternal(forceRefresh: forceRefresh);
+    _refreshInFlight = refresh;
+    try {
+      return await refresh;
+    } finally {
+      if (identical(_refreshInFlight, refresh)) {
+        _refreshInFlight = null;
+      }
+    }
+  }
+
+  Future<ExchangeRateSnapshot> _getRatesInternal({
+    required bool forceRefresh,
+  }) async {
+    final previousSnapshot = _cachedSnapshot ?? await loadSavedSnapshot();
+    final savedFavoriteKeys = await _loadFavoriteKeys();
 
     final retryAfter = await _timeUntilRefreshAllowed(previousSnapshot);
     if (retryAfter != null) {
+      if (!forceRefresh && previousSnapshot != null) {
+        return previousSnapshot;
+      }
       _ratesNoticeUntil = DateTime.now().add(const Duration(seconds: 4));
       throw RatesAlreadyUpdatedException(retryAfter);
     }
@@ -234,6 +257,8 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
         liveRates: liveRates,
         updatedAt: updatedAt,
         previousSnapshot: previousSnapshot,
+        savedFavoriteKeys: savedFavoriteKeys ?? const <String>{},
+        hasSavedFavoriteKeys: savedFavoriteKeys != null,
       );
       final rates = _ratesWithHistory(liveSnapshotRates, histories);
 
@@ -249,61 +274,59 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
       return _cachedSnapshot!;
     } catch (error, stackTrace) {
       // Log error to audit service (async, non-blocking)
-      Future.microtask(() async {
-        try {
-          await AuditService.instance.logError(
-            AuditLog(
-              accion: 'FETCH_EXCHANGE_RATES',
-              mensaje: error.toString(),
-              codigo: error.runtimeType.toString(),
-              metadatos: {
-                'forceRefresh': forceRefresh,
-                'hasCachedSnapshot': _cachedSnapshot != null,
-                'hasPreviousSnapshot': previousSnapshot != null,
-                'stackTrace': stackTrace.toString(),
-              },
-            ),
-          );
-        } catch (_) {
-          // Silently fail
-        }
-      });
+      if (!isNetworkError(error)) {
+        Future.microtask(() async {
+          try {
+            await AuditService.instance.logError(
+              AuditLog(
+                accion: 'FETCH_EXCHANGE_RATES',
+                mensaje: error.toString(),
+                codigo: error.runtimeType.toString(),
+                metadatos: {
+                  'forceRefresh': forceRefresh,
+                  'hasCachedSnapshot': _cachedSnapshot != null,
+                  'hasPreviousSnapshot': previousSnapshot != null,
+                  'stackTrace': stackTrace.toString(),
+                },
+              ),
+            );
+          } catch (_) {
+            // Silently fail
+          }
+        });
+      }
 
       if (_cachedSnapshot != null) {
-        if (!_isNetworkError(error)) {
+        if (!isNetworkError(error)) {
           rethrow;
         }
-        final fallbackError = _isNetworkError(error)
+        final fallbackError = isNetworkError(error)
             ? null
             : error.toString();
-        _cachedSnapshot = await _snapshotWithSavedHistory(
-          _cachedSnapshot!.copyWith(
-            usedFallback: true,
-            fallbackError: fallbackError,
-          ),
+        _cachedSnapshot = _cachedSnapshot!.copyWith(
+          usedFallback: true,
+          fallbackError: fallbackError,
         );
         snapshotNotifier.value = _cachedSnapshot;
         return _cachedSnapshot!;
       }
 
       if (previousSnapshot != null) {
-        if (!_isNetworkError(error)) {
+        if (!isNetworkError(error)) {
           rethrow;
         }
-        final fallbackError = _isNetworkError(error)
+        final fallbackError = isNetworkError(error)
             ? null
             : error.toString();
-        _cachedSnapshot = await _snapshotWithSavedHistory(
-          previousSnapshot.copyWith(
-            usedFallback: true,
-            fallbackError: fallbackError,
-          ),
+        _cachedSnapshot = previousSnapshot.copyWith(
+          usedFallback: true,
+          fallbackError: fallbackError,
         );
         snapshotNotifier.value = _cachedSnapshot;
         return _cachedSnapshot!;
       }
 
-      if (_isNetworkError(error)) {
+      if (isNetworkError(error)) {
         throw const NetworkUnavailableException();
       }
 
@@ -315,6 +338,8 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
     required _SupabaseRates liveRates,
     required DateTime updatedAt,
     required ExchangeRateSnapshot? previousSnapshot,
+    required Set<String> savedFavoriteKeys,
+    required bool hasSavedFavoriteKeys,
   }) {
     final previousRatesByPairKey = {
       for (final rate in previousSnapshot?.rates ?? const <ExchangeRate>[])
@@ -347,7 +372,9 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
         updatedAt: updatedAt,
         previous: previous,
         normalizeValue: _normalizeLiveRateValue,
-        isFavorite: previous?.isFavorite ?? false,
+        isFavorite: hasSavedFavoriteKeys
+          ? savedFavoriteKeys.contains(pairKey)
+          : previous?.isFavorite ?? false,
       );
     }).toList();
   }
@@ -358,12 +385,6 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
     return [...favorites, ...others];
   }
 
-  Future<ExchangeRateSnapshot> _snapshotWithSavedHistory(
-    ExchangeRateSnapshot snapshot,
-  ) async {
-    return snapshot;
-  }
-
   Future<ExchangeRateSnapshot?> loadSavedSnapshot() async {
     if (_cachedSnapshot != null) {
       return _cachedSnapshot;
@@ -371,9 +392,26 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
 
     final snapshot = await _loadSavedSnapshot();
     if (snapshot != null) {
-      _cachedSnapshot = snapshot.copyWith(
-        rates: _sortRatesWithFavorites(snapshot.rates),
-      );
+      final prefs = await SharedPreferences.getInstance();
+      final rawFavoriteKeys = prefs.getStringList(_favoriteKeysKey);
+      final savedFavoriteKeys = rawFavoriteKeys?.toSet();
+      final rates = snapshot.rates.map((rate) {
+        return rate.copyWith(
+          isFavorite: savedFavoriteKeys == null
+              ? rate.isFavorite
+              : savedFavoriteKeys.contains(_favoriteKeyForRate(rate)),
+        );
+      }).toList();
+      _cachedSnapshot = snapshot.copyWith(rates: _sortRatesWithFavorites(rates));
+      if (savedFavoriteKeys == null) {
+        await prefs.setStringList(
+          _favoriteKeysKey,
+          rates
+              .where((rate) => rate.isFavorite)
+              .map(_favoriteKeyForRate)
+              .toList(),
+        );
+      }
       snapshotNotifier.value = _cachedSnapshot;
     }
     return snapshot;
@@ -404,7 +442,36 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
       rates: _sortRatesWithFavorites(updatedRates),
     );
     snapshotNotifier.value = _cachedSnapshot;
+    await _saveFavorite(
+      updatedRates.firstWhere((rate) => rate.id == id),
+      isFavorite,
+    );
     await _saveSnapshot(_cachedSnapshot!);
+  }
+
+  String _favoriteKeyForRate(ExchangeRate rate) {
+    return _rateBindingKey(
+      fromCurrency: rate.moneyType ?? rate.code,
+      toCurrency: rate.conversionCode ?? rate.displayCurrencyCode,
+      name: rate.name,
+    );
+  }
+
+  Future<Set<String>?> _loadFavoriteKeys() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getStringList(_favoriteKeysKey)?.toSet();
+  }
+
+  Future<void> _saveFavorite(ExchangeRate rate, bool isFavorite) async {
+    final prefs = await SharedPreferences.getInstance();
+    final favoriteKeys = await _loadFavoriteKeys() ?? <String>{};
+    final key = _favoriteKeyForRate(rate);
+    if (isFavorite) {
+      favoriteKeys.add(key);
+    } else {
+      favoriteKeys.remove(key);
+    }
+    await prefs.setStringList(_favoriteKeysKey, favoriteKeys.toList());
   }
 
   List<ExchangeRate> _ratesWithHistory(
@@ -616,22 +683,24 @@ class HttpExchangeRateRepository implements ExchangeRateRepository {
       return histories;
     } catch (error, stackTrace) {
       // Log error to audit service (async, non-blocking)
-      Future.microtask(() async {
-        try {
-          await AuditService.instance.logError(
-            AuditLog(
-              accion: 'FETCH_EXCHANGE_RATE_HISTORY',
-              mensaje: error.toString(),
-              codigo: error.runtimeType.toString(),
-              metadatos: {
-                'stackTrace': stackTrace.toString(),
-              },
-            ),
-          );
-        } catch (auditError) {
-        //  debugPrint('Failed to send audit log: $auditError');
-        }
-      });
+      if (!isNetworkError(error)) {
+        Future.microtask(() async {
+          try {
+            await AuditService.instance.logError(
+              AuditLog(
+                accion: 'FETCH_EXCHANGE_RATE_HISTORY',
+                mensaje: error.toString(),
+                codigo: error.runtimeType.toString(),
+                metadatos: {
+                  'stackTrace': stackTrace.toString(),
+                },
+              ),
+            );
+          } catch (_) {
+            // Silently fail
+          }
+        });
+      }
 
       // Fallback to cached history if available
       if (!forceRefresh && _cachedHistory != null) {
@@ -1298,10 +1367,29 @@ Future<ExchangeRateSnapshot?> _loadSavedSnapshot() async {
     final maps = await db.query(_snapshotTable, where: 'id = ?', whereArgs: [1]);
     if (maps.isEmpty) return null;
     try {
-      final decoded = jsonDecode(maps.first['data'] as String);
+      final rawData = maps.first['data'];
+      if (rawData is! String) {
+        throw const FormatException('El snapshot guardado contiene datos nulos.');
+      }
+      final decoded = jsonDecode(rawData);
       if (decoded is Map<String, dynamic>) {
         return ExchangeRateSnapshot.fromJson(decoded);
       }
+      Future.microtask(() async {
+        try {
+          await AuditService.instance.logError(
+            AuditLog(
+              accion: 'LOAD_SNAPSHOT_NULL_DATA',
+              mensaje: 'El snapshot guardado no contiene un objeto válido.',
+              codigo: 'INVALID_SNAPSHOT_SHAPE',
+              metadatos: {
+                'rawDataLength': rawData.length,
+                'dataType': rawData.runtimeType.toString(),
+              },
+            ),
+          );
+        } catch (_) {}
+      });
     } catch (parseError, parseStackTrace) {
       Future.microtask(() async {
         try {
@@ -1311,7 +1399,9 @@ Future<ExchangeRateSnapshot?> _loadSavedSnapshot() async {
               mensaje: parseError.toString(),
               codigo: parseError.runtimeType.toString(),
               metadatos: {
-                'rawDataLength': (maps.first['data'] as String).length,
+                'rawDataLength': maps.first['data'] is String
+                    ? (maps.first['data'] as String).length
+                    : 0,
                 'stackTrace': parseStackTrace.toString(),
               },
             ),

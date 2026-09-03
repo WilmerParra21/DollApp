@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:dollapp/core/models/audit_log.dart';
 import 'package:dollapp/core/services/audit_service.dart';
 import 'package:dollapp/core/widgets/app_notice.dart';
@@ -35,8 +33,6 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   late ValueNotifier<ExchangeRateSnapshot?> _snapshotNotifier;
   var _isRefreshing = false;
-  var _ratesNoticeVisible = false;
-  Timer? _ratesNoticeTimer;
   var _bottomRefreshDrag = 0.0;
 
   var _updateSheetShown = false;
@@ -64,7 +60,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _loadInitialData() async {
     try {
       final snapshot = await HttpExchangeRateRepository.instance.getRates(
-        forceRefresh: true,
+        forceRefresh: false,
       );
       if (!mounted) return;
 
@@ -81,7 +77,6 @@ class _HomeScreenState extends State<HomeScreen> {
         _loadFailed = false;
         _offlineWithoutData = false;
       });
-      _showSnackBar(context, 'Tasas actualizadas correctamente.');
     } catch (e) {
       Future.microtask(() async {
         try {
@@ -137,7 +132,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
-    _ratesNoticeTimer?.cancel();
     _snapshotNotifier.removeListener(_tryRedirectToPinnedCalculator);
     super.dispose();
   }
@@ -261,7 +255,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _refreshRates() async {
     if (_isRefreshing ||
-        _ratesNoticeVisible ||
         HttpExchangeRateRepository.isRatesNoticeVisible) {
       return;
     }
@@ -286,6 +279,13 @@ class _HomeScreenState extends State<HomeScreen> {
       _showSnackBar(context, 'Tasas actualizadas correctamente.');
       return;
     } catch (error) {
+      if (error is NetworkUnavailableException) {
+        if (!mounted) return;
+        setState(() => _isRefreshing = false);
+        _showSnackBar(context, 'Sin conexión a internet.');
+        return;
+      }
+
       Future.microtask(() async {
         try {
           await AuditService.instance.logError(
@@ -299,18 +299,11 @@ class _HomeScreenState extends State<HomeScreen> {
         } catch (_) {}
       });
       if (!mounted) return;
-      if (error is RateRefreshLimitException || error is RatesAlreadyUpdatedException) {
-        setState(() => _isRefreshing = false);
-        _showRatesAlreadyUpdatedNotice();
-        return;
-      }
 
       setState(() => _isRefreshing = false);
       _showSnackBar(
         context,
-        error is NetworkUnavailableException
-            ? 'Sin conexión a internet.'
-            : 'No pudimos actualizar las tasas. Inténtalo nuevamente.',
+        'No pudimos actualizar las tasas. Inténtalo nuevamente.',
       );
       return;
     }
@@ -449,12 +442,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _showRatesAlreadyUpdatedNotice() {
     if (!mounted) return;
-    _ratesNoticeTimer?.cancel();
-    setState(() => _ratesNoticeVisible = true);
     _showSnackBar(context, 'Las tasas ya están actualizadas.');
-    _ratesNoticeTimer = Timer(const Duration(seconds: 4), () {
-      if (mounted) setState(() => _ratesNoticeVisible = false);
-    });
   }
 }
 
@@ -532,6 +520,7 @@ class _HomeContent extends StatelessWidget {
                   rate.id,
                   nextIsFavorite,
                 );
+                if (!context.mounted) return;
 
                 showAppNotice(
                   context,

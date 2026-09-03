@@ -55,12 +55,15 @@ class AuditService {
   Future<void> _insert(AuditLog log) async {
     try {
       final info = await _getPackageInfo();
+      final nowUtc = DateTime.now().toUtc();
+      final venezuelaTime = nowUtc.subtract(const Duration(hours: 4));
       final metadata = <String, dynamic>{
         ...?log.metadatos,
         'appVersion': info.version,
         'appBuildNumber': info.buildNumber,
         'platform': Platform.operatingSystem,
-        'timestampUtc': DateTime.now().toUtc().toIso8601String(),
+        'timestampUtc': nowUtc.toIso8601String(),
+        'timestampVenezuela': '${venezuelaTime.toIso8601String()}-04:00',
       };
 
       await Supabase.instance.client.from(_tableName).insert({
