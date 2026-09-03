@@ -20,9 +20,13 @@ class CurrencyFormatter {
   }
 
   /// Cotizaciones muy pequeñas (reciprocas) para no ver `0,00` con sólo dos decimales.
-  static String moneyRate(double value, String code) {
+  static String moneyRate(
+    double value,
+    String code, {
+    bool fullPrecision = false,
+  }) {
     final normalizedCode = code.toUpperCase();
-    final decimals = _fractionDigitsForRate(value);
+    final decimals = fullPrecision ? _precisionDigits(value) : 2;
 
     return switch (normalizedCode) {
       'VES' || 'Bs' || 'BS.' => bolivarScaled(value, decimals),
@@ -43,9 +47,17 @@ class CurrencyFormatter {
   static String decimal(double value) {
     if (!value.isFinite) return value.toString();
 
-    final truncated =
-        (value.abs() * 100).truncateToDouble() / 100 * value.sign;
+    final truncated = (value.abs() * 100).truncateToDouble() / 100 * value.sign;
     return formatNumber(truncated, 2);
+  }
+
+  static String fullPrecision(double value) {
+    if (!value.isFinite) return value.toString();
+
+    final fixed = value.toStringAsFixed(8);
+    final decimalPart = fixed.split('.').last.replaceFirst(RegExp(r'0+$'), '');
+    final decimals = decimalPart.isEmpty ? 2 : decimalPart.length.clamp(2, 8);
+    return formatNumber(value, decimals);
   }
 
   static String percent(double value) {
@@ -53,12 +65,11 @@ class CurrencyFormatter {
     return '$sign${value.toStringAsFixed(2)}%';
   }
 
-  static int _fractionDigitsForRate(double value) {
-    final a = value.abs();
-    if (!a.isFinite || a == 0) return 2;
-    if (a >= 1) return 2;
-    if (a >= 0.01) return 4;
-    return 6;
+  static int _precisionDigits(double value) {
+    if (!value.isFinite || value == 0) return 2;
+    final fixed = value.abs().toStringAsFixed(8);
+    final decimalPart = fixed.split('.').last.replaceFirst(RegExp(r'0+$'), '');
+    return decimalPart.isEmpty ? 2 : decimalPart.length.clamp(2, 8);
   }
 
   static String formatNumber(double value, [int decimals = 2]) {

@@ -54,6 +54,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
   bool _isLoading = true;
   bool _isRefreshing = false;
   bool _isPinned = false;
+  bool _showFullPrecisionRate = false;
   bool _offlineNoData = false;
   bool _isFetchingHistoricalRate = false;
   final Map<String, DateTime> _selectedHistoricalDateByRate = {};
@@ -157,9 +158,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
           _isLoading = false;
           _offlineNoData = false;
         });
-        _showSnackBar(
-          'Sin conexión a internet.',
-        );
+        _showSnackBar('Sin conexión a internet.');
         return;
       }
 
@@ -393,12 +392,12 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       return double.nan;
     }
     try {
-      final selectedHistoricalValue = historicalValue ??
-          _historicalRateValuesByRate[_activeQuote!.row.id];
+      final selectedHistoricalValue =
+          historicalValue ?? _historicalRateValuesByRate[_activeQuote!.row.id];
       final unitsPerAnchor =
           (selectedHistoricalValue != null && selectedHistoricalValue > 0)
-              ? selectedHistoricalValue
-              : _activeQuote!.unitsPerAnchor;
+          ? selectedHistoricalValue
+          : _activeQuote!.unitsPerAnchor;
       final quote = ParsedQuote(
         row: _activeQuote!.row,
         anchor: _activeQuote!.anchor,
@@ -417,15 +416,19 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
 
   ExchangeRate? _resolvedRowForTrend() => _activeQuote?.row;
 
-  String _formattedResult() {
+  String _formattedResult({bool fullPrecision = false}) {
     final value = _computedNumericResult();
     if (value.isNaN || value.isInfinite) {
       return '—';
     }
-    return CurrencyFormatter.moneyRate(value, _toCode);
+    return CurrencyFormatter.moneyRate(
+      value,
+      _toCode,
+      fullPrecision: fullPrecision,
+    );
   }
 
-  String _formattedRateLabel() {
+  String _formattedRateLabel({bool fullPrecision = false}) {
     final quote = _activeQuote;
     final rate = quote?.row;
     if (quote == null || rate == null) {
@@ -434,9 +437,8 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
 
     final historicalValue = _historicalRateValuesByRate[rate.id];
     final selectedDate = _selectedHistoricalDateByRate[rate.id];
-    final usingHistorical = historicalValue != null &&
-        historicalValue > 0 &&
-        selectedDate != null;
+    final usingHistorical =
+        historicalValue != null && historicalValue > 0 && selectedDate != null;
 
     final n = usingHistorical ? historicalValue : quote.unitsPerAnchor;
     if (!n.isFinite || n <= 0) {
@@ -447,9 +449,9 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
     final conversionLabel = ' (${quote.anchor}/${quote.counter})';
 
     final direct =
-        '1 ${quote.anchor} = ${CurrencyFormatter.moneyRate(n, quote.counter)}';
+        '1 ${quote.anchor} = ${CurrencyFormatter.moneyRate(n, quote.counter, fullPrecision: fullPrecision)}';
     final reciprocalLine =
-        '1 ${quote.counter} = ${CurrencyFormatter.moneyRate(reciprocal, quote.anchor)}';
+        '1 ${quote.counter} = ${CurrencyFormatter.moneyRate(reciprocal, quote.anchor, fullPrecision: fullPrecision)}';
 
     if (usingHistorical) {
       return 'Tasa histórica · ${rate.name}$conversionLabel\n'
@@ -506,7 +508,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
               widget.closeAppOnBack
                   ? Icons.menu_rounded
                   : Icons.arrow_back_rounded,
-                  size: 28,
+              size: 28,
             ),
             onPressed: () {
               if (widget.closeAppOnBack) {
@@ -526,10 +528,10 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
               tooltip: _resolvedRowForTrend() == null
                   ? 'Fijar tasas de conversión al iniciar'
                   : (_resolvedRowForTrend()!.isFavorite
-                      ? (_isPinned
-                          ? 'Desfijar conversión al iniciar'
-                          : 'Fijar conversión al iniciar')
-                      : 'Solo favoritas se pueden fijar'),
+                        ? (_isPinned
+                              ? 'Desfijar conversión al iniciar'
+                              : 'Fijar conversión al iniciar')
+                        : 'Solo favoritas se pueden fijar'),
               icon: Icon(
                 _isPinned ? Icons.push_pin_rounded : Icons.push_pin_outlined,
               ),
@@ -589,7 +591,9 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
                     final trendRateForUi =
                         _historicalTrendRatesByRate[rowForUi.id] ?? rowForUi;
 
-                    final currencyNames = _namesForCalculatorPair(ratesSnapshot);
+                    final currencyNames = _namesForCalculatorPair(
+                      ratesSnapshot,
+                    );
                     final currencyBadges = _badgesForCalculatorPair();
 
                     final favoriteRates = ratesSnapshot.rates
@@ -611,8 +615,13 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
                       currencyBadges: currencyBadges,
                       selectedRate: trendRateForUi,
                       amount: _amount,
-                      formattedResult: _formattedResult(),
-                      rateLabel: _formattedRateLabel(),
+                      formattedResult: _formattedResult(
+                        fullPrecision: _showFullPrecisionRate,
+                      ),
+                      rateLabel: _formattedRateLabel(
+                        fullPrecision: _showFullPrecisionRate,
+                      ),
+                      showFullPrecisionRate: _showFullPrecisionRate,
                       selectedHistoricalDate: selectedHistoricalDate,
                       isPinned: _isPinned,
                       canPin: canPin,
@@ -636,6 +645,9 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
                       onRequestHistoricalDate: _requestHistoricalDate,
                       isFetchingHistoricalRate: _isFetchingHistoricalRate,
                       onOpenExpandedCalculator: _showExpandedCalculator,
+                      onToggleFullPrecisionRate: () => setState(
+                        () => _showFullPrecisionRate = !_showFullPrecisionRate,
+                      ),
                     );
                   },
                 ),
@@ -650,8 +662,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
   void _noopPickHandler() {}
 
   Future<void> _refreshRates() async {
-    if (_isRefreshing ||
-        HttpExchangeRateRepository.isRatesNoticeVisible) {
+    if (_isRefreshing || HttpExchangeRateRepository.isRatesNoticeVisible) {
       return;
     }
 
@@ -667,9 +678,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       if (!mounted) return;
 
       if (latest.usedFallback) {
-        _showSnackBar(
-          'Sin conexión a internet.',
-        );
+        _showSnackBar('Sin conexión a internet.');
         return;
       }
 
@@ -689,6 +698,14 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
         _offlineNoData = false;
       });
     } catch (error) {
+      if ((error is RateRefreshLimitException ||
+              error is RatesAlreadyUpdatedException) &&
+          (_currentSnapshot != null || _bootSnapshot != null)) {
+        if (!mounted) return;
+        _showSnackBar('Tasas actualizadas correctamente.');
+        return;
+      }
+
       if (error is NetworkUnavailableException) {
         if (!mounted) return;
         _showSnackBar(
@@ -890,10 +907,9 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
                         width: 40,
                         height: 4,
                         decoration: BoxDecoration(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .onSurface
-                              .withValues(alpha: 0.2),
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onSurface.withValues(alpha: 0.2),
                           borderRadius: BorderRadius.circular(2),
                         ),
                       ),
@@ -944,10 +960,9 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
                 width: 40,
                 height: 4,
                 decoration: BoxDecoration(
-                  color: Theme.of(context)
-                      .colorScheme
-                      .onSurface
-                      .withValues(alpha: 0.2),
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.onSurface.withValues(alpha: 0.2),
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -957,8 +972,8 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
                 child: Text(
                   'Selecciona una favorita',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
               const SizedBox(height: 8),
@@ -967,8 +982,8 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
                 child: Text(
                   'Elige otra conversión favorita para usarla en la calculadora.',
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
               const SizedBox(height: 16),
@@ -993,7 +1008,9 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
                             : Icons.radio_button_unchecked,
                       ),
                       enabled: !isCurrent,
-                      onTap: isCurrent ? null : () => Navigator.pop(context, rate),
+                      onTap: isCurrent
+                          ? null
+                          : () => Navigator.pop(context, rate),
                     );
                   },
                 ),
@@ -1041,7 +1058,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       return;
     }
     await Clipboard.setData(
-      ClipboardData(text: CurrencyFormatter.decimal(numeric)),
+      ClipboardData(text: CurrencyFormatter.fullPrecision(numeric)),
     );
     _showSnackBar('Resultado copiado');
   }
@@ -1123,10 +1140,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
 
     try {
       final historicalResult = await HttpExchangeRateRepository.instance
-          .fetchHistoricalRateDetails(
-        nombre: rate.name,
-        fecha: pickedDate,
-      );
+          .fetchHistoricalRateDetails(nombre: rate.name, fecha: pickedDate);
 
       HistoricalRateResult? previousResult;
       for (var offset = 1; offset <= 10; offset++) {
@@ -1160,7 +1174,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
           ? 0.0
           : ((historicalResult.value - previousResult.value) /
                     previousResult.value) *
-              100;
+                100;
       final historicalTrendRate = rate.copyWith(
         changePercent: historicalChangePercent,
         sparklineValues: previousResult == null
@@ -1184,19 +1198,19 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
     } catch (error, stackTrace) {
       if (!HttpExchangeRateRepository.isNetworkError(error)) {
         Future.microtask(() async {
-        await AuditService.instance.logError(
-          AuditLog(
-            accion: 'CALCULATOR_HISTORICAL_RATE_FAILED',
-            mensaje: error.toString(),
-            codigo: error.runtimeType.toString(),
-            metadatos: {
-              'rateId': rate.id,
-              'rateName': rate.name,
-              'selectedDate': pickedDate.toIso8601String(),
-              'stackTrace': stackTrace.toString(),
-            },
-          ),
-        );
+          await AuditService.instance.logError(
+            AuditLog(
+              accion: 'CALCULATOR_HISTORICAL_RATE_FAILED',
+              mensaje: error.toString(),
+              codigo: error.runtimeType.toString(),
+              metadatos: {
+                'rateId': rate.id,
+                'rateName': rate.name,
+                'selectedDate': pickedDate.toIso8601String(),
+                'stackTrace': stackTrace.toString(),
+              },
+            ),
+          );
         });
       }
 
@@ -1221,7 +1235,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
 
   void _showRatesAlreadyUpdatedNotice() {
     if (!mounted) return;
-    _showSnackBar('Las tasas ya están actualizadas.');
+    _showSnackBar('Tasas actualizadas correctamente.');
   }
 }
 
@@ -1306,6 +1320,7 @@ class _CalculatorContent extends StatelessWidget {
     required this.amount,
     required this.formattedResult,
     required this.rateLabel,
+    required this.showFullPrecisionRate,
     required this.selectedHistoricalDate,
     required this.isPinned,
     required this.canPin,
@@ -1322,6 +1337,7 @@ class _CalculatorContent extends StatelessWidget {
     required this.onRequestHistoricalDate,
     required this.isFetchingHistoricalRate,
     required this.onOpenExpandedCalculator,
+    required this.onToggleFullPrecisionRate,
   });
 
   final TextEditingController amountController;
@@ -1335,6 +1351,7 @@ class _CalculatorContent extends StatelessWidget {
   final double amount;
   final String formattedResult;
   final String rateLabel;
+  final bool showFullPrecisionRate;
   final DateTime? selectedHistoricalDate;
   final bool isPinned;
   final bool canPin;
@@ -1349,16 +1366,18 @@ class _CalculatorContent extends StatelessWidget {
   final ValueChanged<bool> onPinChanged;
   final ValueChanged<int> onQuickAmount;
   final Future<HistoricalRateResult?> Function(ExchangeRate)
-      onRequestHistoricalDate;
+  onRequestHistoricalDate;
   final bool isFetchingHistoricalRate;
   final VoidCallback onOpenExpandedCalculator;
+  final VoidCallback onToggleFullPrecisionRate;
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
         const verticalPadding = 36.0;
-        final minHeight = constraints.hasBoundedHeight &&
+        final minHeight =
+            constraints.hasBoundedHeight &&
                 constraints.maxHeight > verticalPadding
             ? constraints.maxHeight - verticalPadding
             : 0.0;
@@ -1408,21 +1427,23 @@ class _CalculatorContent extends StatelessWidget {
                   toCode: toCode,
                   formattedResult: formattedResult,
                   rateLabel: rateLabel,
+                  showFullPrecisionRate: showFullPrecisionRate,
                   selectedHistoricalDate: selectedHistoricalDate,
                   rate: selectedRate,
                   onCopy: onCopy,
                   onRequestHistoricalDate: onRequestHistoricalDate,
                   isFetchingHistoricalRate: isFetchingHistoricalRate,
                   onOpenExpandedCalculator: onOpenExpandedCalculator,
+                  onToggleFullPrecisionRate: onToggleFullPrecisionRate,
                 ),
                 const SizedBox(height: 12),
                 _ActionButtons(onCopy: onCopy, onClear: onClear),
                 const SizedBox(height: 16),
                 Text(
                   'Montos rápidos',
-                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
                 ),
                 const SizedBox(height: 10),
                 _QuickAmounts(
@@ -1632,7 +1653,7 @@ class _ExpandedCalculatorSheet extends StatefulWidget {
   final double? initialHistoricalValue;
   final double Function(double amount, double? historicalValue) calculate;
   final Future<HistoricalRateResult?> Function(ExchangeRate)
-      onRequestHistoricalDate;
+  onRequestHistoricalDate;
 
   @override
   State<_ExpandedCalculatorSheet> createState() =>
@@ -1668,7 +1689,10 @@ class _ExpandedCalculatorSheetState extends State<_ExpandedCalculatorSheet> {
   }
 
   double? get _amount {
-    final normalized = _controller.text.trim().replaceAll(' ', '').replaceAll(',', '.');
+    final normalized = _controller.text
+        .trim()
+        .replaceAll(' ', '')
+        .replaceAll(',', '.');
     final value = double.tryParse(normalized);
     return value != null && value.isFinite && value >= 0 ? value : null;
   }
@@ -1720,7 +1744,9 @@ class _ExpandedCalculatorSheetState extends State<_ExpandedCalculatorSheet> {
         : CurrencyFormatter.moneyRate(result, widget.toCode);
 
     return Padding(
-      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
       child: Container(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
         decoration: BoxDecoration(
@@ -1744,9 +1770,9 @@ class _ExpandedCalculatorSheetState extends State<_ExpandedCalculatorSheet> {
             const SizedBox(height: 14),
             Text(
               'Calculadora ampliada',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w900,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
             ),
             const SizedBox(height: 4),
             Text(
@@ -1759,7 +1785,9 @@ class _ExpandedCalculatorSheetState extends State<_ExpandedCalculatorSheet> {
             TextField(
               controller: _controller,
               autofocus: true,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
               inputFormatters: [
                 FilteringTextInputFormatter.allow(RegExp(r'[0-9,.]')),
                 const NoConsecutiveDecimalSeparatorFormatter(),
@@ -1982,13 +2010,15 @@ class _ResultPanel extends StatelessWidget {
     required this.toCode,
     required this.formattedResult,
     required this.rateLabel,
+    required this.showFullPrecisionRate,
     required this.selectedHistoricalDate,
     required this.rate,
-     required this.onRequestHistoricalDate,
-     required this.isFetchingHistoricalRate,
-     required this.onCopy,
-     required this.onOpenExpandedCalculator,
-   });
+    required this.onRequestHistoricalDate,
+    required this.isFetchingHistoricalRate,
+    required this.onCopy,
+    required this.onOpenExpandedCalculator,
+    required this.onToggleFullPrecisionRate,
+  });
 
   String _dateLabel(DateTime date) {
     final day = date.day.toString().padLeft(2, '0');
@@ -2003,11 +2033,13 @@ class _ResultPanel extends StatelessWidget {
   final String rateLabel;
   final DateTime? selectedHistoricalDate;
   final ExchangeRate rate;
+  final bool showFullPrecisionRate;
   final Future<HistoricalRateResult?> Function(ExchangeRate)
-      onRequestHistoricalDate;
+  onRequestHistoricalDate;
   final bool isFetchingHistoricalRate;
   final VoidCallback onCopy;
   final VoidCallback onOpenExpandedCalculator;
+  final VoidCallback onToggleFullPrecisionRate;
 
   @override
   Widget build(BuildContext context) {
@@ -2038,21 +2070,21 @@ class _ResultPanel extends StatelessWidget {
                   ),
                 ),
               ),
-           
-               Flexible(
-                 child: Text(
-                   selectedHistoricalDate != null
-                       ? 'Tasa del ${_dateLabel(selectedHistoricalDate!)}'
-                       : 'Actualización de ${_dateLabel(rate.updatedAt)}',
-                   textAlign: TextAlign.right,
-                   maxLines: 2,
-                   overflow: TextOverflow.ellipsis,
-                   style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                     color: colorScheme.onSurfaceVariant,
-                     fontWeight: FontWeight.w700,
-                   ),
-                 ),
-               ),
+
+              Flexible(
+                child: Text(
+                  selectedHistoricalDate != null
+                      ? 'Tasa del ${_dateLabel(selectedHistoricalDate!)}'
+                      : 'Actualización de ${_dateLabel(rate.updatedAt)}',
+                  textAlign: TextAlign.right,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 4),
@@ -2070,7 +2102,7 @@ class _ResultPanel extends StatelessWidget {
                   ),
                 ),
               ),
-           ],
+            ],
           ),
           const SizedBox(height: 8),
           Row(
@@ -2086,12 +2118,13 @@ class _ResultPanel extends StatelessWidget {
                       child: Text(
                         formattedResult,
                         maxLines: 1,
-                        style: Theme.of(context).textTheme.displaySmall?.copyWith(
-                          color: AppColors.positiveGreen,
-                          fontSize: 24,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 0,
-                        ),
+                        style: Theme.of(context).textTheme.displaySmall
+                            ?.copyWith(
+                              color: AppColors.positiveGreen,
+                              fontSize: 24,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 0,
+                            ),
                       ),
                     ),
                   ),
@@ -2142,7 +2175,27 @@ class _ResultPanel extends StatelessWidget {
           const SizedBox(height: 10),
           Divider(color: colorScheme.outlineVariant.withValues(alpha: .65)),
           const SizedBox(height: 8),
-          _DetailLine(icon: Icons.sell_outlined, text: rateLabel),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: _DetailLine(icon: Icons.sell_outlined, text: rateLabel),
+              ),
+              IconButton(
+                onPressed: onToggleFullPrecisionRate,
+                tooltip: showFullPrecisionRate
+                    ? 'Ocultar precisión completa'
+                    : 'Mostrar precisión completa',
+                visualDensity: VisualDensity.compact,
+                icon: Icon(
+                  showFullPrecisionRate
+                      ? Icons.visibility_rounded
+                      : Icons.visibility_outlined,
+                  size: 20,
+                ),
+              ),
+            ],
+          ),
           if (rate.keptPreviousValue) ...[
             const SizedBox(height: 8),
             _DetailLine(
@@ -2166,9 +2219,7 @@ void _showTradingChart(BuildContext context, ExchangeRate rate) {
 }
 
 class _TrendPanel extends StatelessWidget {
-  const _TrendPanel({
-    required this.rate,
-  });
+  const _TrendPanel({required this.rate});
 
   final ExchangeRate rate;
 
@@ -2223,28 +2274,28 @@ class _TrendPanel extends StatelessWidget {
                   ),
                 ],
               ),
-          if (!hasTrend) ...[
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Icon(
-                  Icons.history_rounded,
-                  size: 17,
-                  color: colorScheme.onSurfaceVariant,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Sin tasa anterior en el histórico.',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              if (!hasTrend) ...[
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Icon(
+                      Icons.history_rounded,
+                      size: 17,
                       color: colorScheme.onSurfaceVariant,
-                      fontWeight: FontWeight.w700,
                     ),
-                  ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Sin tasa anterior en el histórico.',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ],
-            ),
-          ],
             ],
           ),
         ),
@@ -2395,7 +2446,8 @@ class _TradingChartPainter extends CustomPainter {
     }
 
     double yFor(double value) =>
-        chart.bottom - ((value - minValue) / (maxValue - minValue)) * chart.height;
+        chart.bottom -
+        ((value - minValue) / (maxValue - minValue)) * chart.height;
     double xFor(int index) => points.length == 1
         ? chart.center.dx
         : chart.left + (chart.width * index / (points.length - 1));
@@ -2439,7 +2491,10 @@ class _TradingChartPainter extends CustomPainter {
         ..shader = LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [lineColor.withValues(alpha: .28), lineColor.withValues(alpha: 0)],
+          colors: [
+            lineColor.withValues(alpha: .28),
+            lineColor.withValues(alpha: 0),
+          ],
         ).createShader(chart),
     );
     canvas.drawPath(
