@@ -26,15 +26,20 @@ class CurrencyFormatter {
     bool fullPrecision = false,
   }) {
     final normalizedCode = code.toUpperCase();
-    final decimals = fullPrecision ? _precisionDigits(value) : 2;
+    final formattedValue = rateValue(value, fullPrecision: fullPrecision);
 
     return switch (normalizedCode) {
-      'VES' || 'Bs' || 'BS.' => bolivarScaled(value, decimals),
-      'USD' || 'usd' => '\$ ${formatNumber(value, decimals)}',
-      'EUR' || 'eur' => '€ ${formatNumber(value, decimals)}',
-      'COP' || 'cop' => 'COP ${formatNumber(value, decimals)}',
-      _ => '$normalizedCode ${formatNumber(value, decimals)}',
+      'VES' || 'Bs' || 'BS.' => 'Bs. $formattedValue',
+      'USD' || 'usd' => '\$ $formattedValue',
+      'EUR' || 'eur' => '€ $formattedValue',
+      'COP' || 'cop' => 'COP $formattedValue',
+      _ => '$normalizedCode $formattedValue',
     };
+  }
+
+  static String rateValue(double value, {bool fullPrecision = false}) {
+    final decimals = fullPrecision ? _precisionDigits(value) : 2;
+    return formatNumber(value, decimals);
   }
 
   static String bolivarScaled(double value, int decimals) =>

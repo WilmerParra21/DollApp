@@ -247,12 +247,6 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
     return double.tryParse(text) ?? 0;
   }
 
-  double? get _enteredAmount {
-    final text = _normalizedAmountText(_amountController.text);
-    if (text.isEmpty) return null;
-    return double.tryParse(text);
-  }
-
   String _normalizedAmountText(String value) {
     final cleaned = value.trim().replaceAll(' ', '');
     if (cleaned.isEmpty) {
@@ -412,6 +406,17 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
 
   double _computedNumericResult() {
     return _computedNumericResultForAmount(_amount);
+  }
+
+  bool get _canCopyResult {
+    final result = _computedNumericResult();
+    if (!result.isFinite || result <= 0) return false;
+
+    final displayedValue = CurrencyFormatter.rateValue(
+      result,
+      fullPrecision: _showFullPrecisionRate,
+    );
+    return displayedValue != CurrencyFormatter.rateValue(0);
   }
 
   ExchangeRate? _resolvedRowForTrend() => _activeQuote?.row;
@@ -618,6 +623,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
                       formattedResult: _formattedResult(
                         fullPrecision: _showFullPrecisionRate,
                       ),
+                      canCopyResult: _canCopyResult,
                       rateLabel: _formattedRateLabel(
                         fullPrecision: _showFullPrecisionRate,
                       ),
@@ -1048,8 +1054,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
   }
 
   Future<void> _copyResult() async {
-    if (_enteredAmount == null || _amount == 0) {
-      _showSnackBar('Ingresa un monto mayor a 0 para copiar.');
+    if (!_canCopyResult) {
       return;
     }
     final numeric = _computedNumericResult();
@@ -1058,7 +1063,12 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       return;
     }
     await Clipboard.setData(
-      ClipboardData(text: CurrencyFormatter.decimal(numeric)),
+      ClipboardData(
+        text: CurrencyFormatter.rateValue(
+          numeric,
+          fullPrecision: _showFullPrecisionRate,
+        ),
+      ),
     );
     _showSnackBar('Resultado copiado');
   }
@@ -1319,6 +1329,7 @@ class _CalculatorContent extends StatelessWidget {
     required this.selectedRate,
     required this.amount,
     required this.formattedResult,
+    required this.canCopyResult,
     required this.rateLabel,
     required this.showFullPrecisionRate,
     required this.selectedHistoricalDate,
@@ -1350,6 +1361,7 @@ class _CalculatorContent extends StatelessWidget {
   final ExchangeRate selectedRate;
   final double amount;
   final String formattedResult;
+  final bool canCopyResult;
   final String rateLabel;
   final bool showFullPrecisionRate;
   final DateTime? selectedHistoricalDate;
@@ -1431,13 +1443,17 @@ class _CalculatorContent extends StatelessWidget {
                   selectedHistoricalDate: selectedHistoricalDate,
                   rate: selectedRate,
                   onCopy: onCopy,
+                  canCopyResult: canCopyResult,
                   onRequestHistoricalDate: onRequestHistoricalDate,
                   isFetchingHistoricalRate: isFetchingHistoricalRate,
                   onOpenExpandedCalculator: onOpenExpandedCalculator,
                   onToggleFullPrecisionRate: onToggleFullPrecisionRate,
                 ),
                 const SizedBox(height: 12),
-                _ActionButtons(onCopy: onCopy, onClear: onClear),
+                _ActionButtons(
+                  onCopy: canCopyResult ? onCopy : null,
+                  onClear: onClear,
+                ),
                 const SizedBox(height: 16),
                 Text(
                   'Montos rápidos',
@@ -2018,6 +2034,7 @@ class _ResultPanel extends StatelessWidget {
     required this.onRequestHistoricalDate,
     required this.isFetchingHistoricalRate,
     required this.onCopy,
+    required this.canCopyResult,
     required this.onOpenExpandedCalculator,
     required this.onToggleFullPrecisionRate,
   });
@@ -2040,6 +2057,7 @@ class _ResultPanel extends StatelessWidget {
   onRequestHistoricalDate;
   final bool isFetchingHistoricalRate;
   final VoidCallback onCopy;
+  final bool canCopyResult;
   final VoidCallback onOpenExpandedCalculator;
   final VoidCallback onToggleFullPrecisionRate;
 
@@ -2133,7 +2151,7 @@ class _ResultPanel extends StatelessWidget {
                 ),
               ),
               IconButton(
-                onPressed: onCopy,
+                onPressed: canCopyResult ? onCopy : null,
                 icon: Icon(
                   Icons.copy_rounded,
                   color: colorScheme.onSurfaceVariant,
@@ -2526,7 +2544,7 @@ class _TradingChartPainter extends CustomPainter {
 class _ActionButtons extends StatelessWidget {
   const _ActionButtons({required this.onCopy, required this.onClear});
 
-  final VoidCallback onCopy;
+  final VoidCallback? onCopy;
   final VoidCallback onClear;
 
   @override
