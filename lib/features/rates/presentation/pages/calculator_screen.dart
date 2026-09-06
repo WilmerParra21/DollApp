@@ -1058,7 +1058,7 @@ class _CalculatorScreenState extends State<CalculatorScreen> {
       return;
     }
     await Clipboard.setData(
-      ClipboardData(text: CurrencyFormatter.fullPrecision(numeric)),
+      ClipboardData(text: CurrencyFormatter.decimal(numeric)),
     );
     _showSnackBar('Resultado copiado');
   }
@@ -1723,7 +1723,9 @@ class _ExpandedCalculatorSheetState extends State<_ExpandedCalculatorSheet> {
   Future<void> _copy() async {
     final result = _result;
     if (result.isNaN || result.isInfinite) return;
-    await Clipboard.setData(ClipboardData(text: result.toString()));
+    await Clipboard.setData(
+      ClipboardData(text: CurrencyFormatter.decimal(result)),
+    );
     if (mounted) {
       showAppNotice(context, 'Resultado copiado');
     }

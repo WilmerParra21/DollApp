@@ -87,7 +87,7 @@ class AppVersionScreen extends StatelessWidget {
                         _InfoRow(label: 'Estado', value: 'v1.0'),
                         _InfoRow(
                           label: 'Última actualización',
-                          value: '02/09/2026',
+                          value: '06/09/2026',
                         ),
                       ],
                     ),
@@ -188,7 +188,7 @@ class AppVersionScreen extends StatelessWidget {
                             const SizedBox(width: 12),
                             Expanded(
                               child: Text(
-                                'Las tasas mostradas son informativas. DollApp no realiza operaciones cambiarias ni financieras.',
+                                'Las tasas mostradas son informativas. DollApp no realiza ni modifica las operaciones cambiarias presentadas.',
                                 style: Theme.of(context).textTheme.bodyMedium
                                     ?.copyWith(
                                       color: colorScheme.onSurfaceVariant,
@@ -217,11 +217,11 @@ class AppVersionScreen extends StatelessWidget {
 
                         const _FeatureTile(
                           icon: Icons.calculate_rounded,
-                          text: 'Calculadora rápida',
+                          text: 'Calculadora rápida.',
                         ),
                         const _FeatureTile(
                           icon: Icons.dark_mode_rounded,
-                          text: 'Modo oscuro',
+                          text: 'Modo oscuro.',
                         ),
                       ],
                     ),
@@ -372,7 +372,7 @@ const _termsSections = <_PolicySectionData>[
   ),
   _PolicySectionData(
     'Carácter informativo',
-    'Las tasas provienen de fuentes públicas y reconocidas. Pueden presentar retrasos, variaciones, redondeos o interrupciones. Verifica el valor con la fuente correspondiente antes de realizar una operación.',
+    'Las tasas provienen de fuentes públicas y reconocidas. Pueden presentar retrasos, variaciones, redondeos o interrupciones según la disponibilidad de cada fuente. Verifica el valor con la fuente correspondiente antes de realizar una operación.',
   ),
   _PolicySectionData(
     'Responsabilidad',
